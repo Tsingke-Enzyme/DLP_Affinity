@@ -1,0 +1,209 @@
+# DLP-Affinity 预测 WorkflowTemplate
+# 注册：./argo/dlp-affinity-template.create.sh predict
+# 投递：./argo/dlp-affinity-predict.submit.sh
+#   EXP_NAME=exp001 ./argo/dlp-affinity-predict.submit.sh
+#   CHECKPOINT=/mnt/.../best_model.pt INPUT_PATH=/mnt/.../test.csv ./argo/dlp-affinity-predict.submit.sh
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: dlp-affinity-predict
+  namespace: default
+  labels:
+    app: dlp-affinity
+    component: predict
+spec:
+  # entrypoint 仅作为调度器，业务逻辑在下游 template
+  entrypoint: main
+  activeDeadlineSeconds: 21600
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+    secondsAfterSuccess: 3600
+    secondsAfterFailure: 86400
+  arguments:
+    parameters:
+      - name: nas-mount-path
+        value: /mnt
+      # 镜像走北京 ACR VPC 内网仓库（明确 tag，禁止 latest）
+      - name: image
+        value: beijing-acr-cr-registry-vpc.cn-beijing.cr.aliyuncs.com/biocloud/enzyme_dev:DLP_Affinity.v1.0.0
+      - name: checkpoint
+        value: /mnt/nas1/liubo/project/DLP_Affinity/outputs/dlp-affinity-train/best_model.pt
+      - name: input-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/data/test.csv
+      - name: output-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/outputs/predictions.csv
+      - name: work-root
+        value: /mnt/nas1/liubo/project/DLP_Affinity
+      - name: batch-size
+        value: "8"
+      - name: device
+        value: cuda
+      # 阿里云 ACS GPU 型号（与集群调度标签一致）
+      - name: gpu-model-series
+        value: A10
+  volumes:
+    - name: nas-data
+      persistentVolumeClaim:
+        claimName: pvc-nas
+  templates:
+    # ---------- 调度层 ----------
+    - name: main
+      steps:
+        - - name: run-prediction
+            template: run-predict
+            arguments:
+              parameters:
+                - name: nas-mount-path
+                  value: "{{workflow.parameters.nas-mount-path}}"
+                - name: image
+                  value: "{{workflow.parameters.image}}"
+                - name: checkpoint
+                  value: "{{workflow.parameters.checkpoint}}"
+                - name: input-path
+                  value: "{{workflow.parameters.input-path}}"
+                - name: output-path
+                  value: "{{workflow.parameters.output-path}}"
+                - name: work-root
+                  value: "{{workflow.parameters.work-root}}"
+                - name: batch-size
+                  value: "{{workflow.parameters.batch-size}}"
+                - name: device
+                  value: "{{workflow.parameters.device}}"
+                - name: gpu-model-series
+                  value: "{{workflow.parameters.gpu-model-series}}"
+
+    # ---------- 业务层：亲和力预测 ----------
+    # 输入：checkpoint 与序列对文件；输出：预测 CSV 路径（写入 NAS）
+    - name: run-predict
+      inputs:
+        parameters:
+          - name: nas-mount-path
+          - name: image
+          - name: checkpoint
+          - name: input-path
+          - name: output-path
+          - name: work-root
+          - name: batch-size
+          - name: device
+          - name: gpu-model-series
+      outputs:
+        parameters:
+          - name: prediction-path
+            valueFrom:
+              path: /tmp/prediction_path.txt
+      retryStrategy:
+        limit: "2"
+        retryPolicy: "Always"
+        backoff:
+          duration: "20s"
+          factor: "2"
+          maxDuration: "5m"
+      activeDeadlineSeconds: 21600
+      # 阿里云 ACS GPU 调度标签（与 enzyme-aice-mutate 一致）
+      metadata:
+        labels:
+          alibabacloud.com/acs: "true"
+          alibabacloud.com/compute-class: "gpu"
+          alibabacloud.com/gpu-model-series: "{{inputs.parameters.gpu-model-series}}"
+        annotations:
+          alibabacloud.com/extra-ephemeral-storage: "80Gi"
+      script:
+        image: "{{inputs.parameters.image}}"
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          NAS="{{inputs.parameters.nas-mount-path}}"
+          CHECKPOINT="{{inputs.parameters.checkpoint}}"
+          INPUT_PATH="{{inputs.parameters.input-path}}"
+          OUTPUT_PATH="{{inputs.parameters.output-path}}"
+          WORK_ROOT="{{inputs.parameters.work-root}}"
+
+          under_nas() {
+            case "$1" in
+              "$NAS"|"$NAS"/*) return 0 ;;
+              *) echo "路径必须在 NAS 挂载前缀内 ($NAS): $1" >&2; exit 1 ;;
+            esac
+          }
+
+          under_nas "$CHECKPOINT"
+          under_nas "$INPUT_PATH"
+          under_nas "$OUTPUT_PATH"
+          under_nas "$WORK_ROOT"
+
+          export HF_HOME="${WORK_ROOT}/.cache/huggingface"
+          export TRANSFORMERS_CACHE="${HF_HOME}"
+          export TORCH_HOME="${WORK_ROOT}/.cache/torch"
+          export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+          mkdir -p "$HF_HOME" "$TORCH_HOME" "$(dirname "${OUTPUT_PATH}")"
+
+          LOG_FILE="$(dirname "${OUTPUT_PATH}")/argo_predict.log"
+          exec > >(tee -a "${LOG_FILE}") 2>&1
+          echo "=== [dlp-affinity-predict] start $(date -Iseconds) ==="
+          echo "log_file=${LOG_FILE}"
+
+          if [ ! -f "${CHECKPOINT}" ]; then
+            echo "ERROR: checkpoint not found: ${CHECKPOINT}" >&2
+            exit 1
+          fi
+          if [ ! -f "${INPUT_PATH}" ]; then
+            echo "ERROR: input file not found: ${INPUT_PATH}" >&2
+            exit 1
+          fi
+
+          if [ -f "${WORK_ROOT}/release_package/predict.py" ]; then
+            APP_DIR="${WORK_ROOT}/release_package"
+          elif [ -f /app/predict.py ]; then
+            APP_DIR=/app
+          else
+            echo "ERROR: predict.py not found under ${WORK_ROOT}/release_package or /app" >&2
+            exit 1
+          fi
+          cd "${APP_DIR}"
+          export PYTHONPATH="${APP_DIR}${PYTHONPATH:+:$PYTHONPATH}"
+          echo "app_dir=${APP_DIR}"
+
+          # transformers>=4.52 会因要求 torch>=2.4 而禁用镜像中的 torch 2.3.1，需钉兼容版
+          if ! python -c "import importlib.metadata as m; assert m.version('transformers')=='4.46.3'"; then
+            echo "pinning transformers==4.46.3 accelerate==0.34.2 (compat torch 2.3.1)"
+            pip install --no-cache-dir "transformers==4.46.3" "accelerate==0.34.2"
+          fi
+
+          python predict.py \
+            --checkpoint "${CHECKPOINT}" \
+            --input "${INPUT_PATH}" \
+            --output "${OUTPUT_PATH}" \
+            --batch_size "{{inputs.parameters.batch-size}}" \
+            --device "{{inputs.parameters.device}}"
+
+          if [ ! -f "${OUTPUT_PATH}" ]; then
+            echo "ERROR: prediction output not written: ${OUTPUT_PATH}" >&2
+            exit 1
+          fi
+
+          printf '%s' "${OUTPUT_PATH}" > /tmp/prediction_path.txt
+          echo "=== [dlp-affinity-predict] done $(date -Iseconds) output=${OUTPUT_PATH} ==="
+        env:
+          - name: HF_ENDPOINT
+            value: https://hf-mirror.com
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-credentials
+                key: HF_TOKEN
+                optional: true
+        # 资源配额与 enzyme-aice-mutate 对齐（阿里云 ACS GPU Pod）
+        resources:
+          requests:
+            memory: "40Gi"
+            cpu: "10"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "40Gi"
+            cpu: "10"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+          - name: nas-data
+            mountPath: "{{inputs.parameters.nas-mount-path}}"

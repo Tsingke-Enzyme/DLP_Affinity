@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from models import DLPAffinity, DLPAffinityLoss
 from data import AffinityDataset, create_dataloader, create_mock_data
 from configs import DLPAffinityConfig, get_default_config, get_small_config
+from configs.config import infer_esm_hidden_dim
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -164,7 +165,10 @@ def main():
     parser.add_argument('--exp_name', type=str, default=None)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--esm_checkpoint', type=str, default=None)
+    parser.add_argument('--esm_checkpoint', type=str, default=None,
+                        help='可选：已微调 ESM 的 .pt 权重路径；留空则从 --esm_model 加载 HF 基座')
+    parser.add_argument('--esm_model', type=str, default=None,
+                        help='ESM2 基座：HF id 或本地目录（如 /mnt/nas1/liubo/models/esm2_t30_150M_UR50D）')
     parser.add_argument('--freeze_esm', action='store_true')
     args = parser.parse_args()
     
@@ -174,6 +178,9 @@ def main():
     
     if args.train_path: config.data.train_path = args.train_path
     if args.val_path: config.data.val_path = args.val_path
+    if args.esm_model:
+        config.esm.model_name = args.esm_model
+        config.esm.hidden_dim = infer_esm_hidden_dim(args.esm_model)
     config.training.seed = args.seed
     
     if args.exp_name:
@@ -184,6 +191,9 @@ def main():
     
     config.experiment_name = exp_name
     config.output_dir = os.path.join(args.output_dir, exp_name)
+    config.log_dir = os.path.join(config.output_dir, 'logs')
+    os.makedirs(config.output_dir, exist_ok=True)
+    os.makedirs(config.log_dir, exist_ok=True)
     set_seed(config.training.seed)
     
     if args.use_mock_data:
@@ -200,6 +210,7 @@ def main():
     train_dataloader = create_dataloader(train_dataset, batch_size=config.training.batch_size, shuffle=True, use_stratified_sampler=config.data.use_stratified_sampler)
     val_dataloader = create_dataloader(val_dataset, batch_size=config.training.batch_size, shuffle=False, use_stratified_sampler=False) if val_dataset else None
     
+    print(f"ESM model: {config.esm.model_name} (hidden_dim={config.esm.hidden_dim})")
     model = DLPAffinity(
         esm_model_name=config.esm.model_name,
         esm_hidden_dim=config.esm.hidden_dim,

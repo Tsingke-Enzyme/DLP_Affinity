@@ -24,20 +24,44 @@ def load_input_data(input_path: str) -> pd.DataFrame:
     else:
         raise ValueError(f"Unsupported file format: {input_path.suffix}")
     
+    # 兼容 DMS 原始列名 antibody_seq / antigen_seq
+    rename_map = {}
+    if 'seq_ab' not in df.columns and 'antibody_seq' in df.columns:
+        rename_map['antibody_seq'] = 'seq_ab'
+    if 'seq_ag' not in df.columns and 'antigen_seq' in df.columns:
+        rename_map['antigen_seq'] = 'seq_ag'
+    if rename_map:
+        df = df.rename(columns=rename_map)
     if 'seq_ab' not in df.columns or 'seq_ag' not in df.columns:
-        raise ValueError("Input data must contain 'seq_ab' and 'seq_ag' columns")
+        raise ValueError(
+            "Input data must contain 'seq_ab'/'seq_ag' "
+            "or 'antibody_seq'/'antigen_seq' columns"
+        )
     return df
 
 def load_model(checkpoint_path: str, device: str = 'cpu') -> DLPAffinity:
+    """从训练 checkpoint 重建 DLPAffinity 并加载权重。
+
+    输入：
+        checkpoint_path: best_model.pt 路径（含 model_state_dict 与 config）
+        device: 推理设备（cpu / cuda）
+    输出：
+        已 eval、权重加载完成的 DLPAffinity
+    处理逻辑：
+        按 config 构建模型；ESM2 为懒加载，须先 _lazy_load 注册 esm_encoder._model
+        子模块，否则 checkpoint 中的 esm_encoder._model.* 会被视为 Unexpected key。
+    """
+    print(f"Loading model from: {checkpoint_path}")
     print(f"Loading model from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint.get('config')
-    
     if config:
         if hasattr(config, 'esm'):
             model = DLPAffinity(
                 esm_model_name=config.esm.model_name,
                 esm_hidden_dim=config.esm.hidden_dim,
+                freeze_esm=config.esm.freeze_backbone,
+                esm_unfreeze_last_n_layers=config.esm.unfreeze_last_n_layers,
                 use_mock_esm=config.esm.use_mock,
                 esm_checkpoint_path=getattr(config.esm, 'checkpoint_path', None),
                 r2r_compress_dim=config.r2r.compress_dim,
@@ -58,12 +82,16 @@ def load_model(checkpoint_path: str, device: str = 'cpu') -> DLPAffinity:
             )
     else:
         model = DLPAffinity()
-    
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-        
+
+    # 训练时首次 forward 后 ESM 参数会写入 state_dict；预测构建阶段尚未懒加载
+    esm_encoder = getattr(model, 'esm_encoder', None)
+    if esm_encoder is not None and hasattr(esm_encoder, '_lazy_load'):
+        print(f"Eager-loading ESM: {getattr(esm_encoder, 'model_name', '')}")
+        esm_encoder._lazy_load()
+
+    state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
+    model.load_state_dict(state_dict)
+
     model.to(device)
     model.eval()
     return model

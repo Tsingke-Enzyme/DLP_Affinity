@@ -47,16 +47,31 @@ class AffinityDataset(Dataset):
         weights = weights / weights.sum() * len(weights)
         return torch.tensor(weights, dtype=torch.float32)
     
+    @staticmethod
+    def _resolve_column(df_columns, preferred: str, aliases: List[str]) -> str:
+        """Resolve CSV column name; support DMS naming (antibody_seq/antigen_seq/escape_fraction)."""
+        candidates = [preferred] + [a for a in aliases if a != preferred]
+        for name in candidates:
+            if name in df_columns:
+                return name
+        raise ValueError(
+            f"找不到列 '{preferred}'（备选: {aliases}），实际列: {list(df_columns)}"
+        )
+
     def _load_data(self, data_path: Union[str, Path], seq_ab_col: str, seq_ag_col: str, kd_col: str) -> List[Dict]:
         data_path = Path(data_path)
         if data_path.suffix == '.csv':
             df = pd.read_csv(data_path)
+            # 7KMG DMS 原始列：antibody_seq / antigen_seq / escape_fraction
+            ab_col = self._resolve_column(df.columns, seq_ab_col, ['seq_ab', 'antibody_seq', 'ab_seq'])
+            ag_col = self._resolve_column(df.columns, seq_ag_col, ['seq_ag', 'antigen_seq', 'ag_seq'])
+            label_col = self._resolve_column(df.columns, kd_col, ['kd', 'escape_fraction', 'affinity', 'label'])
             samples = []
             for _, row in df.iterrows():
                 sample = {
-                    'seq_ab': row[seq_ab_col],
-                    'seq_ag': row[seq_ag_col],
-                    'kd': float(row[kd_col])
+                    'seq_ab': row[ab_col],
+                    'seq_ag': row[ag_col],
+                    'kd': float(row[label_col])
                 }
                 if 'chain_type' in row: sample['chain_type'] = row['chain_type']
                 samples.append(sample)

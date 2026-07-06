@@ -1,0 +1,15 @@
+.git
+.gitignore
+__MACOSX
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+**/.pytest_cache
+dev_log
+argo
+*.md
+!release_package/README.md
+release_package/data/AB-Bind
+release_package/data/7KMG
+release_package/data/*.csv
+release_package/__pycache__

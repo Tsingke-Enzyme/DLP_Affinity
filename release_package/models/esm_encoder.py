@@ -71,10 +71,18 @@ class ESM2Encoder(nn.Module):
         
         if self.use_half:
             self._model = self._model.half()
-        
+
+        # 无论是否 freeze，必须标记已加载；否则非 freeze 时每次 encode 会重新 from_pretrained，冲掉已加载/微调权重
+        if hasattr(self._model, 'config'):
+            self._hidden_dim = self._model.config.hidden_size
+
         if self.freeze_backbone:
             self._setup_freeze_state()
-            
+        else:
+            self._loaded = True
+            if self._target_device is not None:
+                self._model = self._model.to(self._target_device)
+
     def _setup_freeze_state(self):
         if self._model is None:
             self._lazy_load()
@@ -162,7 +170,9 @@ class ESM2Encoder(nn.Module):
             for i in range(len(sequences)):
                 seq_len = len(sequences[i])
                 result_embeddings.append(embeddings[i, 1:seq_len+1, :])
-            return res_embeddings, attention_mask if return_attention_mask else result_embeddings
+            if return_attention_mask:
+                return result_embeddings, attention_mask
+            return result_embeddings
         
         if return_attention_mask:
             return embeddings, attention_mask

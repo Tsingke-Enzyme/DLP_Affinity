@@ -143,6 +143,28 @@ class DLPAffinityConfig:
         config.log_dir = config_dict.get('log_dir', './logs')
         return config
 
+def infer_esm_hidden_dim(model_name: str) -> int:
+    """
+    根据 ESM2 模型名或本地目录名推断 hidden_size。
+
+    输入：model_name — HuggingFace 模型 id 或本地目录路径（如 .../esm2_t30_150M_UR50D）
+    输出：对应 hidden_dim（150M→640，650M→1280，3B→2560 等）
+    处理逻辑：按路径/名称中的规模标记匹配；无法识别时默认 2560（3B）
+    """
+    name = model_name or ""
+    if "3B" in name:
+        return 2560
+    if "650M" in name:
+        return 1280
+    if "150M" in name:
+        return 640
+    if "35M" in name:
+        return 480
+    if "8M" in name:
+        return 320
+    return 2560
+
+
 def get_default_config() -> DLPAffinityConfig:
     return DLPAffinityConfig()
 
