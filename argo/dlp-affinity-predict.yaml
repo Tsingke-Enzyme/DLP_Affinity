@@ -1,8 +1,7 @@
-# DLP-Affinity 预测 WorkflowTemplate
+# DLP-Affinity 预测 WorkflowTemplate（单层 entrypoint，直接运行 predict.py）
 # 注册：./argo/dlp-affinity-template.create.sh predict
 # 投递：./argo/dlp-affinity-predict.submit.sh
-#   EXP_NAME=exp001 ./argo/dlp-affinity-predict.submit.sh
-#   CHECKPOINT=/mnt/.../best_model.pt INPUT_PATH=/mnt/.../test.csv ./argo/dlp-affinity-predict.submit.sh
+#   CHECKPOINT=/mnt/.../best_model.pt ./argo/dlp-affinity-predict.submit.sh
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -12,7 +11,6 @@ metadata:
     app: dlp-affinity
     component: predict
 spec:
-  # entrypoint 仅作为调度器，业务逻辑在下游 template
   entrypoint: main
   activeDeadlineSeconds: 21600
   ttlStrategy:
@@ -23,13 +21,12 @@ spec:
     parameters:
       - name: nas-mount-path
         value: /mnt
-      # 镜像走北京 ACR VPC 内网仓库（明确 tag，禁止 latest）
       - name: image
         value: beijing-acr-cr-registry-vpc.cn-beijing.cr.aliyuncs.com/biocloud/enzyme_dev:DLP_Affinity.v1.0.0
       - name: checkpoint
         value: /mnt/nas1/liubo/project/DLP_Affinity/outputs/dlp-affinity-train/best_model.pt
       - name: input-path
-        value: /mnt/nas1/liubo/project/DLP_Affinity/data/test.csv
+        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_val_model_input.csv
       - name: output-path
         value: /mnt/nas1/liubo/project/DLP_Affinity/outputs/predictions.csv
       - name: work-root
@@ -38,7 +35,6 @@ spec:
         value: "8"
       - name: device
         value: cuda
-      # 阿里云 ACS GPU 型号（与集群调度标签一致）
       - name: gpu-model-series
         value: A10
   volumes:
@@ -46,46 +42,7 @@ spec:
       persistentVolumeClaim:
         claimName: pvc-nas
   templates:
-    # ---------- 调度层 ----------
     - name: main
-      steps:
-        - - name: run-prediction
-            template: run-predict
-            arguments:
-              parameters:
-                - name: nas-mount-path
-                  value: "{{workflow.parameters.nas-mount-path}}"
-                - name: image
-                  value: "{{workflow.parameters.image}}"
-                - name: checkpoint
-                  value: "{{workflow.parameters.checkpoint}}"
-                - name: input-path
-                  value: "{{workflow.parameters.input-path}}"
-                - name: output-path
-                  value: "{{workflow.parameters.output-path}}"
-                - name: work-root
-                  value: "{{workflow.parameters.work-root}}"
-                - name: batch-size
-                  value: "{{workflow.parameters.batch-size}}"
-                - name: device
-                  value: "{{workflow.parameters.device}}"
-                - name: gpu-model-series
-                  value: "{{workflow.parameters.gpu-model-series}}"
-
-    # ---------- 业务层：亲和力预测 ----------
-    # 输入：checkpoint 与序列对文件；输出：预测 CSV 路径（写入 NAS）
-    - name: run-predict
-      inputs:
-        parameters:
-          - name: nas-mount-path
-          - name: image
-          - name: checkpoint
-          - name: input-path
-          - name: output-path
-          - name: work-root
-          - name: batch-size
-          - name: device
-          - name: gpu-model-series
       outputs:
         parameters:
           - name: prediction-path
@@ -99,27 +56,26 @@ spec:
           factor: "2"
           maxDuration: "5m"
       activeDeadlineSeconds: 21600
-      # 阿里云 ACS GPU 调度标签（与 enzyme-aice-mutate 一致）
       metadata:
         labels:
           alibabacloud.com/acs: "true"
           alibabacloud.com/compute-class: "gpu"
-          alibabacloud.com/gpu-model-series: "{{inputs.parameters.gpu-model-series}}"
+          alibabacloud.com/gpu-model-series: "{{workflow.parameters.gpu-model-series}}"
         annotations:
           alibabacloud.com/extra-ephemeral-storage: "80Gi"
       script:
-        image: "{{inputs.parameters.image}}"
+        image: "{{workflow.parameters.image}}"
         imagePullPolicy: IfNotPresent
         workingDir: /app
         command: [bash]
         source: |
           set -euo pipefail
 
-          NAS="{{inputs.parameters.nas-mount-path}}"
-          CHECKPOINT="{{inputs.parameters.checkpoint}}"
-          INPUT_PATH="{{inputs.parameters.input-path}}"
-          OUTPUT_PATH="{{inputs.parameters.output-path}}"
-          WORK_ROOT="{{inputs.parameters.work-root}}"
+          NAS="{{workflow.parameters.nas-mount-path}}"
+          CHECKPOINT="{{workflow.parameters.checkpoint}}"
+          INPUT_PATH="{{workflow.parameters.input-path}}"
+          OUTPUT_PATH="{{workflow.parameters.output-path}}"
+          WORK_ROOT="{{workflow.parameters.work-root}}"
 
           under_nas() {
             case "$1" in
@@ -165,7 +121,6 @@ spec:
           export PYTHONPATH="${APP_DIR}${PYTHONPATH:+:$PYTHONPATH}"
           echo "app_dir=${APP_DIR}"
 
-          # transformers>=4.52 会因要求 torch>=2.4 而禁用镜像中的 torch 2.3.1，需钉兼容版
           if ! python -c "import importlib.metadata as m; assert m.version('transformers')=='4.46.3'"; then
             echo "pinning transformers==4.46.3 accelerate==0.34.2 (compat torch 2.3.1)"
             pip install --no-cache-dir "transformers==4.46.3" "accelerate==0.34.2"
@@ -175,8 +130,8 @@ spec:
             --checkpoint "${CHECKPOINT}" \
             --input "${INPUT_PATH}" \
             --output "${OUTPUT_PATH}" \
-            --batch_size "{{inputs.parameters.batch-size}}" \
-            --device "{{inputs.parameters.device}}"
+            --batch_size "{{workflow.parameters.batch-size}}" \
+            --device "{{workflow.parameters.device}}"
 
           if [ ! -f "${OUTPUT_PATH}" ]; then
             echo "ERROR: prediction output not written: ${OUTPUT_PATH}" >&2
@@ -194,7 +149,6 @@ spec:
                 name: hf-credentials
                 key: HF_TOKEN
                 optional: true
-        # 资源配额与 enzyme-aice-mutate 对齐（阿里云 ACS GPU Pod）
         resources:
           requests:
             memory: "40Gi"
@@ -206,4 +160,4 @@ spec:
             nvidia.com/gpu: "1"
         volumeMounts:
           - name: nas-data
-            mountPath: "{{inputs.parameters.nas-mount-path}}"
+            mountPath: "{{workflow.parameters.nas-mount-path}}"

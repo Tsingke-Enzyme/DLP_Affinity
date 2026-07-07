@@ -1,7 +1,7 @@
-# DLP-Affinity 训练微调 WorkflowTemplate
+# DLP-Affinity 训练 WorkflowTemplate（单层 entrypoint，直接运行 train.py）
 # 注册：./argo/dlp-affinity-template.create.sh train
 # 投递：./argo/dlp-affinity-train.submit.sh
-#   EXP_NAME=exp001 FREEZE_ESM=true ./argo/dlp-affinity-train.submit.sh
+#   NUM_EPOCHS=20 EXP_NAME=exp001 ./argo/dlp-affinity-train.submit.sh
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -11,7 +11,6 @@ metadata:
     app: dlp-affinity
     component: train
 spec:
-  # entrypoint 仅作为调度器，业务逻辑在下游 template
   entrypoint: main
   activeDeadlineSeconds: 86400
   ttlStrategy:
@@ -22,17 +21,14 @@ spec:
     parameters:
       - name: nas-mount-path
         value: /mnt
-      # 镜像走北京 ACR VPC 内网仓库（明确 tag，禁止 latest）
       - name: image
         value: beijing-acr-cr-registry-vpc.cn-beijing.cr.aliyuncs.com/biocloud/enzyme_dev:DLP_Affinity.v1.0.0
       - name: train-path
         value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
       - name: val-path
         value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_val_model_input.csv
-      # ESM2 基座：本地 HF 目录（优先）或 HF model id
       - name: esm-model-path
         value: /mnt/nas1/liubo/models/esm2_t30_150M_UR50D
-      # 可选：已微调 ESM 的 .pt；留空则仅用 esm-model-path 基座
       - name: esm-checkpoint
         value: ""
       - name: output-dir
@@ -41,19 +37,18 @@ spec:
         value: /mnt/nas1/liubo/project/DLP_Affinity
       - name: exp-name
         value: dlp-affinity-train
+      - name: num-epochs
+        value: "50"
       - name: seed
         value: "42"
       - name: device
         value: cuda
-      # true: 冻结 ESM2，仅训练 R2R / GSPE / Regression Head
       - name: freeze-esm
         value: "true"
-      # true: 使用小模型配置（联调/冒烟）
       - name: use-small
         value: "false"
       - name: config-path
         value: ""
-      # 阿里云 ACS GPU 型号（与集群调度标签一致）
       - name: gpu-model-series
         value: A10
   volumes:
@@ -61,64 +56,7 @@ spec:
       persistentVolumeClaim:
         claimName: pvc-nas
   templates:
-    # ---------- 调度层 ----------
     - name: main
-      steps:
-        - - name: train-finetune
-            template: run-train
-            arguments:
-              parameters:
-                - name: nas-mount-path
-                  value: "{{workflow.parameters.nas-mount-path}}"
-                - name: image
-                  value: "{{workflow.parameters.image}}"
-                - name: train-path
-                  value: "{{workflow.parameters.train-path}}"
-                - name: val-path
-                  value: "{{workflow.parameters.val-path}}"
-                - name: esm-model-path
-                  value: "{{workflow.parameters.esm-model-path}}"
-                - name: esm-checkpoint
-                  value: "{{workflow.parameters.esm-checkpoint}}"
-                - name: output-dir
-                  value: "{{workflow.parameters.output-dir}}"
-                - name: work-root
-                  value: "{{workflow.parameters.work-root}}"
-                - name: exp-name
-                  value: "{{workflow.parameters.exp-name}}"
-                - name: seed
-                  value: "{{workflow.parameters.seed}}"
-                - name: device
-                  value: "{{workflow.parameters.device}}"
-                - name: freeze-esm
-                  value: "{{workflow.parameters.freeze-esm}}"
-                - name: use-small
-                  value: "{{workflow.parameters.use-small}}"
-                - name: config-path
-                  value: "{{workflow.parameters.config-path}}"
-                - name: gpu-model-series
-                  value: "{{workflow.parameters.gpu-model-series}}"
-
-    # ---------- 业务层：训练微调 ----------
-    # 输入：训练/验证 CSV、可选 ESM checkpoint；输出：best_model 路径与实验目录（写入 NAS）
-    - name: run-train
-      inputs:
-        parameters:
-          - name: nas-mount-path
-          - name: image
-          - name: train-path
-          - name: val-path
-          - name: esm-model-path
-          - name: esm-checkpoint
-          - name: output-dir
-          - name: work-root
-          - name: exp-name
-          - name: seed
-          - name: device
-          - name: freeze-esm
-          - name: use-small
-          - name: config-path
-          - name: gpu-model-series
       outputs:
         parameters:
           - name: best-model-path
@@ -135,31 +73,30 @@ spec:
           factor: "2"
           maxDuration: "10m"
       activeDeadlineSeconds: 86400
-      # 阿里云 ACS GPU 调度标签（与 enzyme-aice-mutate 一致）
       metadata:
         labels:
           alibabacloud.com/acs: "true"
           alibabacloud.com/compute-class: "gpu"
-          alibabacloud.com/gpu-model-series: "{{inputs.parameters.gpu-model-series}}"
+          alibabacloud.com/gpu-model-series: "{{workflow.parameters.gpu-model-series}}"
         annotations:
           alibabacloud.com/extra-ephemeral-storage: "80Gi"
       script:
-        image: "{{inputs.parameters.image}}"
+        image: "{{workflow.parameters.image}}"
         imagePullPolicy: IfNotPresent
         workingDir: /app
         command: [bash]
         source: |
           set -euo pipefail
 
-          NAS="{{inputs.parameters.nas-mount-path}}"
-          TRAIN_PATH="{{inputs.parameters.train-path}}"
-          VAL_PATH="{{inputs.parameters.val-path}}"
-          OUTPUT_DIR="{{inputs.parameters.output-dir}}"
-          WORK_ROOT="{{inputs.parameters.work-root}}"
-          EXP_NAME="{{inputs.parameters.exp-name}}"
-          ESM_MODEL="{{inputs.parameters.esm-model-path}}"
-          ESM_CKPT="{{inputs.parameters.esm-checkpoint}}"
-          CONFIG_PATH="{{inputs.parameters.config-path}}"
+          NAS="{{workflow.parameters.nas-mount-path}}"
+          TRAIN_PATH="{{workflow.parameters.train-path}}"
+          VAL_PATH="{{workflow.parameters.val-path}}"
+          OUTPUT_DIR="{{workflow.parameters.output-dir}}"
+          WORK_ROOT="{{workflow.parameters.work-root}}"
+          EXP_NAME="{{workflow.parameters.exp-name}}"
+          ESM_MODEL="{{workflow.parameters.esm-model-path}}"
+          ESM_CKPT="{{workflow.parameters.esm-checkpoint}}"
+          CONFIG_PATH="{{workflow.parameters.config-path}}"
 
           under_nas() {
             case "$1" in
@@ -183,11 +120,10 @@ spec:
           EXP_DIR="${OUTPUT_DIR}/${EXP_NAME}"
           mkdir -p "$HF_HOME" "$TORCH_HOME" "$OUTPUT_DIR" "$EXP_DIR"
 
-          # ACS/ECI 上 kubectl logs 常为空，日志落到 NAS 便于排查
           LOG_FILE="${EXP_DIR}/argo_main.log"
           exec > >(tee -a "${LOG_FILE}") 2>&1
           echo "=== [dlp-affinity-train] start $(date -Iseconds) ==="
-          echo "log_file=${LOG_FILE}"
+          echo "log_file=${LOG_FILE} num_epochs={{workflow.parameters.num-epochs}}"
 
           if [ ! -f "${TRAIN_PATH}" ]; then
             echo "ERROR: train data not found: ${TRAIN_PATH}" >&2
@@ -195,7 +131,6 @@ spec:
           fi
           echo "train columns: $(head -1 "${TRAIN_PATH}")"
 
-          # 优先用 NAS 上的代码（便于 hotfix），否则回退镜像 /app
           if [ -f "${WORK_ROOT}/release_package/train.py" ]; then
             APP_DIR="${WORK_ROOT}/release_package"
           elif [ -f /app/train.py ]; then
@@ -209,7 +144,6 @@ spec:
           echo "app_dir=${APP_DIR}"
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 
-          # transformers>=4.52 会因要求 torch>=2.4 而禁用镜像中的 torch 2.3.1，需钉兼容版
           if ! python -c "import importlib.metadata as m; assert m.version('transformers')=='4.46.3'"; then
             echo "pinning transformers==4.46.3 accelerate==0.34.2 (compat torch 2.3.1)"
             pip install --no-cache-dir "transformers==4.46.3" "accelerate==0.34.2"
@@ -220,8 +154,9 @@ spec:
             --train_path "${TRAIN_PATH}"
             --output_dir "${OUTPUT_DIR}"
             --exp_name "${EXP_NAME}"
-            --seed "{{inputs.parameters.seed}}"
-            --device "{{inputs.parameters.device}}"
+            --num_epochs "{{workflow.parameters.num-epochs}}"
+            --seed "{{workflow.parameters.seed}}"
+            --device "{{workflow.parameters.device}}"
           )
 
           if [ -n "${VAL_PATH}" ]; then
@@ -257,11 +192,11 @@ spec:
             ARGS+=(--config "${CONFIG_PATH}")
           fi
 
-          if [ "{{inputs.parameters.freeze-esm}}" = "true" ]; then
+          if [ "{{workflow.parameters.freeze-esm}}" = "true" ]; then
             ARGS+=(--freeze_esm)
           fi
 
-          if [ "{{inputs.parameters.use-small}}" = "true" ]; then
+          if [ "{{workflow.parameters.use-small}}" = "true" ]; then
             ARGS+=(--use_small)
           fi
 
@@ -287,7 +222,6 @@ spec:
                 name: hf-credentials
                 key: HF_TOKEN
                 optional: true
-        # 资源配额与 enzyme-aice-mutate 对齐（阿里云 ACS GPU Pod）
         resources:
           requests:
             memory: "40Gi"
@@ -299,4 +233,4 @@ spec:
             nvidia.com/gpu: "1"
         volumeMounts:
           - name: nas-data
-            mountPath: "{{inputs.parameters.nas-mount-path}}"
+            mountPath: "{{workflow.parameters.nas-mount-path}}"

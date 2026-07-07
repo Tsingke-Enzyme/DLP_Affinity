@@ -170,6 +170,8 @@ def main():
     parser.add_argument('--esm_model', type=str, default=None,
                         help='ESM2 基座：HF id 或本地目录（如 /mnt/nas1/liubo/models/esm2_t30_150M_UR50D）')
     parser.add_argument('--freeze_esm', action='store_true')
+    parser.add_argument('--num_epochs', type=int, default=None,
+                        help='训练轮数；未指定时使用 config 默认值')
     args = parser.parse_args()
     
     if args.config: config = DLPAffinityConfig.load(args.config)
@@ -182,7 +184,9 @@ def main():
         config.esm.model_name = args.esm_model
         config.esm.hidden_dim = infer_esm_hidden_dim(args.esm_model)
     config.training.seed = args.seed
-    
+    if args.num_epochs is not None:
+        config.training.num_epochs = args.num_epochs
+
     if args.exp_name:
         exp_name = args.exp_name
     else:
