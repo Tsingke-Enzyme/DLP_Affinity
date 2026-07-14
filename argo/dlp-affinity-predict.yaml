@@ -42,7 +42,28 @@ spec:
       persistentVolumeClaim:
         claimName: pvc-nas
   templates:
+    # inputs 默认取 workflow.parameters，便于 standalone 投递；编排侧可经 templateRef 覆盖
     - name: main
+      inputs:
+        parameters:
+          - name: nas-mount-path
+            value: "{{workflow.parameters.nas-mount-path}}"
+          - name: image
+            value: "{{workflow.parameters.image}}"
+          - name: checkpoint
+            value: "{{workflow.parameters.checkpoint}}"
+          - name: input-path
+            value: "{{workflow.parameters.input-path}}"
+          - name: output-path
+            value: "{{workflow.parameters.output-path}}"
+          - name: work-root
+            value: "{{workflow.parameters.work-root}}"
+          - name: batch-size
+            value: "{{workflow.parameters.batch-size}}"
+          - name: device
+            value: "{{workflow.parameters.device}}"
+          - name: gpu-model-series
+            value: "{{workflow.parameters.gpu-model-series}}"
       outputs:
         parameters:
           - name: prediction-path
@@ -60,22 +81,22 @@ spec:
         labels:
           alibabacloud.com/acs: "true"
           alibabacloud.com/compute-class: "gpu"
-          alibabacloud.com/gpu-model-series: "{{workflow.parameters.gpu-model-series}}"
+          alibabacloud.com/gpu-model-series: "{{inputs.parameters.gpu-model-series}}"
         annotations:
           alibabacloud.com/extra-ephemeral-storage: "80Gi"
       script:
-        image: "{{workflow.parameters.image}}"
+        image: "{{inputs.parameters.image}}"
         imagePullPolicy: IfNotPresent
         workingDir: /app
         command: [bash]
         source: |
           set -euo pipefail
 
-          NAS="{{workflow.parameters.nas-mount-path}}"
-          CHECKPOINT="{{workflow.parameters.checkpoint}}"
-          INPUT_PATH="{{workflow.parameters.input-path}}"
-          OUTPUT_PATH="{{workflow.parameters.output-path}}"
-          WORK_ROOT="{{workflow.parameters.work-root}}"
+          NAS="{{inputs.parameters.nas-mount-path}}"
+          CHECKPOINT="{{inputs.parameters.checkpoint}}"
+          INPUT_PATH="{{inputs.parameters.input-path}}"
+          OUTPUT_PATH="{{inputs.parameters.output-path}}"
+          WORK_ROOT="{{inputs.parameters.work-root}}"
 
           under_nas() {
             case "$1" in
@@ -130,8 +151,8 @@ spec:
             --checkpoint "${CHECKPOINT}" \
             --input "${INPUT_PATH}" \
             --output "${OUTPUT_PATH}" \
-            --batch_size "{{workflow.parameters.batch-size}}" \
-            --device "{{workflow.parameters.device}}"
+            --batch_size "{{inputs.parameters.batch-size}}" \
+            --device "{{inputs.parameters.device}}"
 
           if [ ! -f "${OUTPUT_PATH}" ]; then
             echo "ERROR: prediction output not written: ${OUTPUT_PATH}" >&2
@@ -160,4 +181,4 @@ spec:
             nvidia.com/gpu: "1"
         volumeMounts:
           - name: nas-data
-            mountPath: "{{workflow.parameters.nas-mount-path}}"
+            mountPath: "{{inputs.parameters.nas-mount-path}}"

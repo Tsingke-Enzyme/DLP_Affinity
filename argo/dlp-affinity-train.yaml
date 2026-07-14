@@ -56,7 +56,42 @@ spec:
       persistentVolumeClaim:
         claimName: pvc-nas
   templates:
+    # inputs 默认取 workflow.parameters，便于 standalone 投递；编排侧可经 templateRef 覆盖
     - name: main
+      inputs:
+        parameters:
+          - name: nas-mount-path
+            value: "{{workflow.parameters.nas-mount-path}}"
+          - name: image
+            value: "{{workflow.parameters.image}}"
+          - name: train-path
+            value: "{{workflow.parameters.train-path}}"
+          - name: val-path
+            value: "{{workflow.parameters.val-path}}"
+          - name: esm-model-path
+            value: "{{workflow.parameters.esm-model-path}}"
+          - name: esm-checkpoint
+            value: "{{workflow.parameters.esm-checkpoint}}"
+          - name: output-dir
+            value: "{{workflow.parameters.output-dir}}"
+          - name: work-root
+            value: "{{workflow.parameters.work-root}}"
+          - name: exp-name
+            value: "{{workflow.parameters.exp-name}}"
+          - name: num-epochs
+            value: "{{workflow.parameters.num-epochs}}"
+          - name: seed
+            value: "{{workflow.parameters.seed}}"
+          - name: device
+            value: "{{workflow.parameters.device}}"
+          - name: freeze-esm
+            value: "{{workflow.parameters.freeze-esm}}"
+          - name: use-small
+            value: "{{workflow.parameters.use-small}}"
+          - name: config-path
+            value: "{{workflow.parameters.config-path}}"
+          - name: gpu-model-series
+            value: "{{workflow.parameters.gpu-model-series}}"
       outputs:
         parameters:
           - name: best-model-path
@@ -77,26 +112,26 @@ spec:
         labels:
           alibabacloud.com/acs: "true"
           alibabacloud.com/compute-class: "gpu"
-          alibabacloud.com/gpu-model-series: "{{workflow.parameters.gpu-model-series}}"
+          alibabacloud.com/gpu-model-series: "{{inputs.parameters.gpu-model-series}}"
         annotations:
           alibabacloud.com/extra-ephemeral-storage: "80Gi"
       script:
-        image: "{{workflow.parameters.image}}"
+        image: "{{inputs.parameters.image}}"
         imagePullPolicy: IfNotPresent
         workingDir: /app
         command: [bash]
         source: |
           set -euo pipefail
 
-          NAS="{{workflow.parameters.nas-mount-path}}"
-          TRAIN_PATH="{{workflow.parameters.train-path}}"
-          VAL_PATH="{{workflow.parameters.val-path}}"
-          OUTPUT_DIR="{{workflow.parameters.output-dir}}"
-          WORK_ROOT="{{workflow.parameters.work-root}}"
-          EXP_NAME="{{workflow.parameters.exp-name}}"
-          ESM_MODEL="{{workflow.parameters.esm-model-path}}"
-          ESM_CKPT="{{workflow.parameters.esm-checkpoint}}"
-          CONFIG_PATH="{{workflow.parameters.config-path}}"
+          NAS="{{inputs.parameters.nas-mount-path}}"
+          TRAIN_PATH="{{inputs.parameters.train-path}}"
+          VAL_PATH="{{inputs.parameters.val-path}}"
+          OUTPUT_DIR="{{inputs.parameters.output-dir}}"
+          WORK_ROOT="{{inputs.parameters.work-root}}"
+          EXP_NAME="{{inputs.parameters.exp-name}}"
+          ESM_MODEL="{{inputs.parameters.esm-model-path}}"
+          ESM_CKPT="{{inputs.parameters.esm-checkpoint}}"
+          CONFIG_PATH="{{inputs.parameters.config-path}}"
 
           under_nas() {
             case "$1" in
@@ -123,7 +158,7 @@ spec:
           LOG_FILE="${EXP_DIR}/argo_main.log"
           exec > >(tee -a "${LOG_FILE}") 2>&1
           echo "=== [dlp-affinity-train] start $(date -Iseconds) ==="
-          echo "log_file=${LOG_FILE} num_epochs={{workflow.parameters.num-epochs}}"
+          echo "log_file=${LOG_FILE} num_epochs={{inputs.parameters.num-epochs}}"
 
           if [ ! -f "${TRAIN_PATH}" ]; then
             echo "ERROR: train data not found: ${TRAIN_PATH}" >&2
@@ -154,9 +189,9 @@ spec:
             --train_path "${TRAIN_PATH}"
             --output_dir "${OUTPUT_DIR}"
             --exp_name "${EXP_NAME}"
-            --num_epochs "{{workflow.parameters.num-epochs}}"
-            --seed "{{workflow.parameters.seed}}"
-            --device "{{workflow.parameters.device}}"
+            --num_epochs "{{inputs.parameters.num-epochs}}"
+            --seed "{{inputs.parameters.seed}}"
+            --device "{{inputs.parameters.device}}"
           )
 
           if [ -n "${VAL_PATH}" ]; then
@@ -192,11 +227,11 @@ spec:
             ARGS+=(--config "${CONFIG_PATH}")
           fi
 
-          if [ "{{workflow.parameters.freeze-esm}}" = "true" ]; then
+          if [ "{{inputs.parameters.freeze-esm}}" = "true" ]; then
             ARGS+=(--freeze_esm)
           fi
 
-          if [ "{{workflow.parameters.use-small}}" = "true" ]; then
+          if [ "{{inputs.parameters.use-small}}" = "true" ]; then
             ARGS+=(--use_small)
           fi
 
@@ -233,4 +268,4 @@ spec:
             nvidia.com/gpu: "1"
         volumeMounts:
           - name: nas-data
-            mountPath: "{{workflow.parameters.nas-mount-path}}"
+            mountPath: "{{inputs.parameters.nas-mount-path}}"

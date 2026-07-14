@@ -1,0 +1,327 @@
+# DLP-Affinity 训练→多突变组合→预测 串联 WorkflowTemplate
+# 依赖：先注册 train / predict 模板
+#   ./argo/dlp-affinity-template.create.sh all
+# 注册本模板：
+#   ./argo/dlp-affinity-template.create.sh train_predict
+# 投递：
+#   ./argo/dlp-affinity-train_predict.submit.sh
+#
+# DAG：
+#   1) templateRef dlp-affinity-train：用单位点 KD 数据训练适配度模型
+#   2) build-combinations：筛选优于 WT 的单突变，饱和组合为多突变预测输入
+#   3) templateRef dlp-affinity-predict：对多突变库做亲和力预测
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: dlp-affinity-train-predict
+  namespace: default
+  labels:
+    app: dlp-affinity
+    component: train-predict
+spec:
+  entrypoint: main
+  activeDeadlineSeconds: 108000
+  ttlStrategy:
+    secondsAfterCompletion: 86400
+    secondsAfterSuccess: 3600
+    secondsAfterFailure: 86400
+  arguments:
+    parameters:
+      - name: nas-mount-path
+        value: /mnt
+      - name: image
+        value: beijing-acr-cr-registry-vpc.cn-beijing.cr.aliyuncs.com/biocloud/enzyme_dev:DLP_Affinity.v1.0.0
+      # --- 训练（单位点突变验证 KD）---
+      - name: train-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
+      - name: val-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_val_model_input.csv
+      - name: esm-model-path
+        value: /mnt/nas1/liubo/models/esm2_t30_150M_UR50D
+      - name: esm-checkpoint
+        value: ""
+      - name: output-dir
+        value: /mnt/nas1/liubo/project/DLP_Affinity/outputs
+      - name: work-root
+        value: /mnt/nas1/liubo/project/DLP_Affinity
+      - name: exp-name
+        value: dlp-affinity-train-predict
+      - name: num-epochs
+        value: "50"
+      - name: seed
+        value: "42"
+      - name: device
+        value: cuda
+      - name: freeze-esm
+        value: "true"
+      - name: use-small
+        value: "false"
+      - name: config-path
+        value: ""
+      - name: gpu-model-series
+        value: A10
+      # --- 多突变组合 ---
+      # 默认与 train-path 相同：从训练用单位点 KD 表筛选增益突变
+      - name: single-mutant-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
+      - name: wt-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_wildtype_ref.csv
+      - name: label-col
+        value: kd
+      - name: better-direction
+        value: lower
+      - name: min-order
+        value: "2"
+      - name: max-order
+        value: "0"
+      - name: max-combinations
+        value: "0"
+      - name: combo-output-path
+        value: ""
+      # --- 预测 ---
+      - name: predict-output-path
+        value: ""
+      - name: batch-size
+        value: "8"
+  volumes:
+    - name: nas-data
+      persistentVolumeClaim:
+        claimName: pvc-nas
+  templates:
+    - name: main
+      dag:
+        tasks:
+          - name: train
+            templateRef:
+              name: dlp-affinity-train
+              template: main
+            arguments:
+              parameters:
+                - name: nas-mount-path
+                  value: "{{workflow.parameters.nas-mount-path}}"
+                - name: image
+                  value: "{{workflow.parameters.image}}"
+                - name: train-path
+                  value: "{{workflow.parameters.train-path}}"
+                - name: val-path
+                  value: "{{workflow.parameters.val-path}}"
+                - name: esm-model-path
+                  value: "{{workflow.parameters.esm-model-path}}"
+                - name: esm-checkpoint
+                  value: "{{workflow.parameters.esm-checkpoint}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.output-dir}}"
+                - name: work-root
+                  value: "{{workflow.parameters.work-root}}"
+                - name: exp-name
+                  value: "{{workflow.parameters.exp-name}}"
+                - name: num-epochs
+                  value: "{{workflow.parameters.num-epochs}}"
+                - name: seed
+                  value: "{{workflow.parameters.seed}}"
+                - name: device
+                  value: "{{workflow.parameters.device}}"
+                - name: freeze-esm
+                  value: "{{workflow.parameters.freeze-esm}}"
+                - name: use-small
+                  value: "{{workflow.parameters.use-small}}"
+                - name: config-path
+                  value: "{{workflow.parameters.config-path}}"
+                - name: gpu-model-series
+                  value: "{{workflow.parameters.gpu-model-series}}"
+
+          - name: build-combinations
+            dependencies: [train]
+            template: build-combinations
+            arguments:
+              parameters:
+                - name: single-mutant-path
+                  value: "{{workflow.parameters.single-mutant-path}}"
+                - name: wt-path
+                  value: "{{workflow.parameters.wt-path}}"
+                - name: work-root
+                  value: "{{workflow.parameters.work-root}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.output-dir}}"
+                - name: exp-name
+                  value: "{{workflow.parameters.exp-name}}"
+                - name: combo-output-path
+                  value: "{{workflow.parameters.combo-output-path}}"
+                - name: predict-output-path
+                  value: "{{workflow.parameters.predict-output-path}}"
+                - name: label-col
+                  value: "{{workflow.parameters.label-col}}"
+                - name: better-direction
+                  value: "{{workflow.parameters.better-direction}}"
+                - name: min-order
+                  value: "{{workflow.parameters.min-order}}"
+                - name: max-order
+                  value: "{{workflow.parameters.max-order}}"
+                - name: max-combinations
+                  value: "{{workflow.parameters.max-combinations}}"
+                - name: seed
+                  value: "{{workflow.parameters.seed}}"
+                - name: image
+                  value: "{{workflow.parameters.image}}"
+                - name: nas-mount-path
+                  value: "{{workflow.parameters.nas-mount-path}}"
+
+          - name: predict
+            dependencies: [build-combinations]
+            templateRef:
+              name: dlp-affinity-predict
+              template: main
+            arguments:
+              parameters:
+                - name: nas-mount-path
+                  value: "{{workflow.parameters.nas-mount-path}}"
+                - name: image
+                  value: "{{workflow.parameters.image}}"
+                - name: checkpoint
+                  value: "{{tasks.train.outputs.parameters.best-model-path}}"
+                - name: input-path
+                  value: "{{tasks.build-combinations.outputs.parameters.predict-input-path}}"
+                - name: output-path
+                  value: "{{tasks.build-combinations.outputs.parameters.predict-output-path}}"
+                - name: work-root
+                  value: "{{workflow.parameters.work-root}}"
+                - name: batch-size
+                  value: "{{workflow.parameters.batch-size}}"
+                - name: device
+                  value: "{{workflow.parameters.device}}"
+                - name: gpu-model-series
+                  value: "{{workflow.parameters.gpu-model-series}}"
+
+    - name: build-combinations
+      inputs:
+        parameters:
+          - name: single-mutant-path
+          - name: wt-path
+          - name: work-root
+          - name: output-dir
+          - name: exp-name
+          - name: combo-output-path
+          - name: predict-output-path
+          - name: label-col
+          - name: better-direction
+          - name: min-order
+          - name: max-order
+          - name: max-combinations
+          - name: seed
+          - name: image
+          - name: nas-mount-path
+      outputs:
+        parameters:
+          - name: predict-input-path
+            valueFrom:
+              path: /tmp/predict_input_path.txt
+          - name: predict-output-path
+            valueFrom:
+              path: /tmp/predict_output_path.txt
+          - name: selected-singles-path
+            valueFrom:
+              path: /tmp/selected_singles_path.txt
+      retryStrategy:
+        limit: "2"
+        retryPolicy: "Always"
+        backoff:
+          duration: "15s"
+          factor: "2"
+          maxDuration: "5m"
+      activeDeadlineSeconds: 3600
+      script:
+        image: "{{inputs.parameters.image}}"
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: [bash]
+        source: |
+          set -euo pipefail
+
+          NAS="{{inputs.parameters.nas-mount-path}}"
+          WORK_ROOT="{{inputs.parameters.work-root}}"
+          OUTPUT_DIR="{{inputs.parameters.output-dir}}"
+          EXP_NAME="{{inputs.parameters.exp-name}}"
+          SINGLE_PATH="{{inputs.parameters.single-mutant-path}}"
+          WT_PATH="{{inputs.parameters.wt-path}}"
+          COMBO_OUT="{{inputs.parameters.combo-output-path}}"
+          PREDICT_OUT="{{inputs.parameters.predict-output-path}}"
+          LABEL_COL="{{inputs.parameters.label-col}}"
+          BETTER_DIR="{{inputs.parameters.better-direction}}"
+
+          under_nas() {
+            case "$1" in
+              "$NAS"|"$NAS"/*) return 0 ;;
+              *) echo "路径必须在 NAS 挂载前缀内 ($NAS): $1" >&2; exit 1 ;;
+            esac
+          }
+
+          under_nas "$WORK_ROOT"
+          under_nas "$OUTPUT_DIR"
+          under_nas "$SINGLE_PATH"
+          [ -n "$WT_PATH" ] && under_nas "$WT_PATH"
+
+          EXP_DIR="${OUTPUT_DIR}/${EXP_NAME}"
+          mkdir -p "${EXP_DIR}/combo"
+          if [ -z "${COMBO_OUT}" ]; then
+            COMBO_OUT="${EXP_DIR}/combo/multimutant_predict_input.csv"
+          fi
+          if [ -z "${PREDICT_OUT}" ]; then
+            PREDICT_OUT="${EXP_DIR}/combo/multimutant_predictions.csv"
+          fi
+          under_nas "$COMBO_OUT"
+          under_nas "$PREDICT_OUT"
+          SELECTED_OUT="${EXP_DIR}/combo/beneficial_singles.csv"
+
+          LOG_FILE="${EXP_DIR}/combo/argo_build_combinations.log"
+          exec > >(tee -a "${LOG_FILE}") 2>&1
+          echo "=== [build-combinations] start $(date -Iseconds) ==="
+
+          SCRIPT_PY="${WORK_ROOT}/script/build_multimutant_library.py"
+          if [ ! -f "${SCRIPT_PY}" ]; then
+            echo "ERROR: script not found: ${SCRIPT_PY}" >&2
+            echo "请将仓库 script/build_multimutant_library.py 同步到 work-root" >&2
+            exit 1
+          fi
+          if [ ! -f "${SINGLE_PATH}" ]; then
+            echo "ERROR: single-mutant data not found: ${SINGLE_PATH}" >&2
+            exit 1
+          fi
+
+          # 若默认 label-col=kd 但文件只有 escape_fraction，脚本会自动回退解析
+          ARGS=(
+            --input "${SINGLE_PATH}"
+            --output "${COMBO_OUT}"
+            --label-col "${LABEL_COL}"
+            --better-direction "${BETTER_DIR}"
+            --min-order "{{inputs.parameters.min-order}}"
+            --max-order "{{inputs.parameters.max-order}}"
+            --max-combinations "{{inputs.parameters.max-combinations}}"
+            --seed "{{inputs.parameters.seed}}"
+            --selected-singles-out "${SELECTED_OUT}"
+          )
+          if [ -n "${WT_PATH}" ]; then
+            ARGS+=(--wt-path "${WT_PATH}")
+          fi
+
+          echo "python ${SCRIPT_PY} ${ARGS[*]}"
+          python "${SCRIPT_PY}" "${ARGS[@]}"
+
+          if [ ! -f "${COMBO_OUT}" ]; then
+            echo "ERROR: combo output missing: ${COMBO_OUT}" >&2
+            exit 1
+          fi
+
+          printf '%s' "${COMBO_OUT}" > /tmp/predict_input_path.txt
+          printf '%s' "${PREDICT_OUT}" > /tmp/predict_output_path.txt
+          printf '%s' "${SELECTED_OUT}" > /tmp/selected_singles_path.txt
+          echo "=== [build-combinations] done $(date -Iseconds) combo=${COMBO_OUT} ==="
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+        volumeMounts:
+          - name: nas-data
+            mountPath: "{{inputs.parameters.nas-mount-path}}"
