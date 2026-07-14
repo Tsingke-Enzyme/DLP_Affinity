@@ -1,4 +1,4 @@
-# DLP-Affinity 训练→多突变组合→预测 串联 WorkflowTemplate
+# DLP-Affinity 组合校验→训练→预测 串联 WorkflowTemplate
 # 依赖：先注册 train / predict 模板
 #   ./argo/dlp-affinity-template.create.sh all
 # 注册本模板：
@@ -7,8 +7,8 @@
 #   ./argo/dlp-affinity-train_predict.submit.sh
 #
 # DAG：
-#   1) templateRef dlp-affinity-train：用单位点 KD 数据训练适配度模型
-#   2) build-combinations：筛选优于 WT 的单突变，饱和组合为多突变预测输入
+#   1) build-combinations：校验 train/val/单突变数据，筛增益单突变并饱和组合
+#   2) templateRef dlp-affinity-train：数据校验通过后训练适配度模型
 #   3) templateRef dlp-affinity-predict：对多突变库做亲和力预测
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -79,6 +79,14 @@ spec:
       - name: combo-output-path
         value: ""
       # --- 预测 ---
+      # checkpoint / input-path / output-path 为 predict 模板 inputs 默认值占位；
+      # DAG 中由 train / build-combinations 输出覆盖，勿依赖此处空值投递
+      - name: checkpoint
+        value: ""
+      - name: input-path
+        value: ""
+      - name: output-path
+        value: ""
       - name: predict-output-path
         value: ""
       - name: batch-size
@@ -91,7 +99,48 @@ spec:
     - name: main
       dag:
         tasks:
+          # 先组合+校验；失败则不启动 GPU 训练/预测
+          - name: build-combinations
+            template: build-combinations
+            arguments:
+              parameters:
+                - name: single-mutant-path
+                  value: "{{workflow.parameters.single-mutant-path}}"
+                - name: train-path
+                  value: "{{workflow.parameters.train-path}}"
+                - name: val-path
+                  value: "{{workflow.parameters.val-path}}"
+                - name: wt-path
+                  value: "{{workflow.parameters.wt-path}}"
+                - name: work-root
+                  value: "{{workflow.parameters.work-root}}"
+                - name: output-dir
+                  value: "{{workflow.parameters.output-dir}}"
+                - name: exp-name
+                  value: "{{workflow.parameters.exp-name}}"
+                - name: combo-output-path
+                  value: "{{workflow.parameters.combo-output-path}}"
+                - name: predict-output-path
+                  value: "{{workflow.parameters.predict-output-path}}"
+                - name: label-col
+                  value: "{{workflow.parameters.label-col}}"
+                - name: better-direction
+                  value: "{{workflow.parameters.better-direction}}"
+                - name: min-order
+                  value: "{{workflow.parameters.min-order}}"
+                - name: max-order
+                  value: "{{workflow.parameters.max-order}}"
+                - name: max-combinations
+                  value: "{{workflow.parameters.max-combinations}}"
+                - name: seed
+                  value: "{{workflow.parameters.seed}}"
+                - name: image
+                  value: "{{workflow.parameters.image}}"
+                - name: nas-mount-path
+                  value: "{{workflow.parameters.nas-mount-path}}"
+
           - name: train
+            dependencies: [build-combinations]
             templateRef:
               name: dlp-affinity-train
               template: main
@@ -130,44 +179,8 @@ spec:
                 - name: gpu-model-series
                   value: "{{workflow.parameters.gpu-model-series}}"
 
-          - name: build-combinations
-            dependencies: [train]
-            template: build-combinations
-            arguments:
-              parameters:
-                - name: single-mutant-path
-                  value: "{{workflow.parameters.single-mutant-path}}"
-                - name: wt-path
-                  value: "{{workflow.parameters.wt-path}}"
-                - name: work-root
-                  value: "{{workflow.parameters.work-root}}"
-                - name: output-dir
-                  value: "{{workflow.parameters.output-dir}}"
-                - name: exp-name
-                  value: "{{workflow.parameters.exp-name}}"
-                - name: combo-output-path
-                  value: "{{workflow.parameters.combo-output-path}}"
-                - name: predict-output-path
-                  value: "{{workflow.parameters.predict-output-path}}"
-                - name: label-col
-                  value: "{{workflow.parameters.label-col}}"
-                - name: better-direction
-                  value: "{{workflow.parameters.better-direction}}"
-                - name: min-order
-                  value: "{{workflow.parameters.min-order}}"
-                - name: max-order
-                  value: "{{workflow.parameters.max-order}}"
-                - name: max-combinations
-                  value: "{{workflow.parameters.max-combinations}}"
-                - name: seed
-                  value: "{{workflow.parameters.seed}}"
-                - name: image
-                  value: "{{workflow.parameters.image}}"
-                - name: nas-mount-path
-                  value: "{{workflow.parameters.nas-mount-path}}"
-
           - name: predict
-            dependencies: [build-combinations]
+            dependencies: [train]
             templateRef:
               name: dlp-affinity-predict
               template: main
@@ -196,6 +209,8 @@ spec:
       inputs:
         parameters:
           - name: single-mutant-path
+          - name: train-path
+          - name: val-path
           - name: wt-path
           - name: work-root
           - name: output-dir
@@ -242,6 +257,8 @@ spec:
           OUTPUT_DIR="{{inputs.parameters.output-dir}}"
           EXP_NAME="{{inputs.parameters.exp-name}}"
           SINGLE_PATH="{{inputs.parameters.single-mutant-path}}"
+          TRAIN_PATH="{{inputs.parameters.train-path}}"
+          VAL_PATH="{{inputs.parameters.val-path}}"
           WT_PATH="{{inputs.parameters.wt-path}}"
           COMBO_OUT="{{inputs.parameters.combo-output-path}}"
           PREDICT_OUT="{{inputs.parameters.predict-output-path}}"
@@ -258,6 +275,8 @@ spec:
           under_nas "$WORK_ROOT"
           under_nas "$OUTPUT_DIR"
           under_nas "$SINGLE_PATH"
+          under_nas "$TRAIN_PATH"
+          [ -n "$VAL_PATH" ] && under_nas "$VAL_PATH"
           [ -n "$WT_PATH" ] && under_nas "$WT_PATH"
 
           EXP_DIR="${OUTPUT_DIR}/${EXP_NAME}"
@@ -274,7 +293,7 @@ spec:
 
           LOG_FILE="${EXP_DIR}/combo/argo_build_combinations.log"
           exec > >(tee -a "${LOG_FILE}") 2>&1
-          echo "=== [build-combinations] start $(date -Iseconds) ==="
+          echo "=== [build-combinations] validate+build start $(date -Iseconds) ==="
 
           SCRIPT_PY="${WORK_ROOT}/script/build_multimutant_library.py"
           if [ ! -f "${SCRIPT_PY}" ]; then
@@ -282,15 +301,11 @@ spec:
             echo "请将仓库 script/build_multimutant_library.py 同步到 work-root" >&2
             exit 1
           fi
-          if [ ! -f "${SINGLE_PATH}" ]; then
-            echo "ERROR: single-mutant data not found: ${SINGLE_PATH}" >&2
-            exit 1
-          fi
 
-          # 若默认 label-col=kd 但文件只有 escape_fraction，脚本会自动回退解析
           ARGS=(
             --input "${SINGLE_PATH}"
             --output "${COMBO_OUT}"
+            --train-path "${TRAIN_PATH}"
             --label-col "${LABEL_COL}"
             --better-direction "${BETTER_DIR}"
             --min-order "{{inputs.parameters.min-order}}"
@@ -299,6 +314,9 @@ spec:
             --seed "{{inputs.parameters.seed}}"
             --selected-singles-out "${SELECTED_OUT}"
           )
+          if [ -n "${VAL_PATH}" ]; then
+            ARGS+=(--val-path "${VAL_PATH}")
+          fi
           if [ -n "${WT_PATH}" ]; then
             ARGS+=(--wt-path "${WT_PATH}")
           fi
@@ -310,6 +328,12 @@ spec:
             echo "ERROR: combo output missing: ${COMBO_OUT}" >&2
             exit 1
           fi
+          N_COMBO="$(python -c "import pandas as pd; print(len(pd.read_csv('${COMBO_OUT}')))")"
+          if [ "${N_COMBO}" -lt 1 ]; then
+            echo "ERROR: combo csv has 0 rows: ${COMBO_OUT}" >&2
+            exit 1
+          fi
+          echo "validation ok: n_combinations=${N_COMBO}"
 
           printf '%s' "${COMBO_OUT}" > /tmp/predict_input_path.txt
           printf '%s' "${PREDICT_OUT}" > /tmp/predict_output_path.txt

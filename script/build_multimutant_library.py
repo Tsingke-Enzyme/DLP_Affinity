@@ -30,6 +30,10 @@ REQUIRED_PRED_COLS = [
     "mutation",
 ]
 
+SEQ_AB_ALIASES = ("antibody_seq", "seq_ab", "ab_seq")
+SEQ_AG_ALIASES = ("antigen_seq", "seq_ag", "ag_seq")
+LABEL_ALIASES = ("kd", "KD", "affinity", "escape_fraction", "label", "pkd", "pKD")
+
 
 @dataclass(frozen=True)
 class SingleMutation:
@@ -340,6 +344,146 @@ def combinations_to_dataframe(
     return df
 
 
+def _find_col(columns: Sequence[str], aliases: Sequence[str], role: str) -> str:
+    """在列名中按别名列表查找一列。"""
+    for name in aliases:
+        if name in columns:
+            return name
+    raise ValueError(f"缺少{role}列（备选 {list(aliases)}），实际列: {list(columns)}")
+
+
+def validate_affinity_csv(
+    path: str,
+    *,
+    require_label: bool,
+    label_col: str = "kd",
+    role: str = "data",
+) -> dict:
+    """校验训练/验证/单突变 CSV 是否可供后续 train/predict 使用。
+
+    输入：
+        path: CSV 路径
+        require_label: 是否要求亲和力标签列
+        label_col: 优先标签列
+        role: 日志中的角色名（train/val/single）
+    输出：
+        校验摘要 dict
+    处理逻辑：
+        检查文件存在、非空、序列列齐全；标签可解析；序列非空且长度一致；数值标签可转 float。
+    """
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"[{role}] 文件不存在: {path}")
+    df = pd.read_csv(p)
+    if df.empty:
+        raise ValueError(f"[{role}] CSV 为空: {path}")
+
+    ab_col = _find_col(df.columns, SEQ_AB_ALIASES, f"{role} 抗体序列")
+    ag_col = _find_col(df.columns, SEQ_AG_ALIASES, f"{role} 抗原序列")
+    resolved_label = None
+    if require_label:
+        preferred = [label_col] + [a for a in LABEL_ALIASES if a != label_col]
+        resolved_label = _find_col(df.columns, preferred, f"{role} 亲和力标签")
+
+    null_ab = int(df[ab_col].isna().sum())
+    null_ag = int(df[ag_col].isna().sum())
+    if null_ab or null_ag:
+        raise ValueError(f"[{role}] 存在空序列: antibody_na={null_ab} antigen_na={null_ag}")
+
+    ab_lens = df[ab_col].astype(str).map(len)
+    ag_lens = df[ag_col].astype(str).map(len)
+    if (ab_lens < 1).any() or (ag_lens < 1).any():
+        raise ValueError(f"[{role}] 存在长度为 0 的序列")
+
+    if resolved_label is not None:
+        try:
+            labels = pd.to_numeric(df[resolved_label], errors="raise")
+        except Exception as exc:
+            raise ValueError(f"[{role}] 标签列 {resolved_label} 无法解析为数值: {exc}") from exc
+        if labels.isna().any():
+            raise ValueError(f"[{role}] 标签列 {resolved_label} 含 NaN")
+
+    summary = {
+        "role": role,
+        "path": str(p),
+        "n_rows": int(len(df)),
+        "ab_col": ab_col,
+        "ag_col": ag_col,
+        "label_col": resolved_label,
+        "ab_len_min": int(ab_lens.min()),
+        "ab_len_max": int(ab_lens.max()),
+        "ag_len_min": int(ag_lens.min()),
+        "ag_len_max": int(ag_lens.max()),
+    }
+    print(f"[validate] {role}: rows={summary['n_rows']} "
+          f"ab_len=[{summary['ab_len_min']},{summary['ab_len_max']}] "
+          f"ag_len=[{summary['ag_len_min']},{summary['ag_len_max']}] "
+          f"label={resolved_label}")
+    return summary
+
+
+def validate_pipeline_inputs(
+    *,
+    single_mutant_path: str,
+    train_path: Optional[str] = None,
+    val_path: Optional[str] = None,
+    wt_path: Optional[str] = None,
+    label_col: str = "kd",
+) -> List[dict]:
+    """流水线前置校验：单突变组合输入 + 训练/验证 CSV。
+
+    输入：
+        single_mutant_path / train_path / val_path / wt_path / label_col
+    输出：
+        各文件校验摘要列表；任一项失败抛异常
+    """
+    reports: List[dict] = []
+    reports.append(
+        validate_affinity_csv(
+            single_mutant_path,
+            require_label=True,
+            label_col=label_col,
+            role="single-mutant",
+        )
+    )
+    for col in ("site", "wildtype", "mutation"):
+        df = pd.read_csv(single_mutant_path, nrows=1)
+        if col not in df.columns:
+            raise ValueError(
+                f"[single-mutant] 组合构建还需要列 {col}，实际列: {list(df.columns)}"
+            )
+
+    if wt_path:
+        reports.append(
+            validate_affinity_csv(
+                wt_path,
+                require_label=False,
+                label_col=label_col,
+                role="wildtype",
+            )
+        )
+
+    if train_path:
+        reports.append(
+            validate_affinity_csv(
+                train_path,
+                require_label=True,
+                label_col=label_col,
+                role="train",
+            )
+        )
+    if val_path:
+        reports.append(
+            validate_affinity_csv(
+                val_path,
+                require_label=True,
+                label_col=label_col,
+                role="val",
+            )
+        )
+    return reports
+
+
 def build_library(
     input_path: str,
     output_path: str,
@@ -352,8 +496,10 @@ def build_library(
     max_combinations: int = 0,
     seed: int = 42,
     selected_singles_out: Optional[str] = None,
+    train_path: Optional[str] = None,
+    val_path: Optional[str] = None,
 ) -> dict:
-    """构建多突变预测输入库。
+    """构建多突变预测输入库（先校验数据，再组合）。
 
     输入：
         input_path: 单位点突变验证 KD CSV
@@ -361,9 +507,19 @@ def build_library(
         wt_path / wt_kd / label_col / better_direction: 野生型与优劣判定
         min_order / max_order / max_combinations / seed: 组合控制
         selected_singles_out: 可选，写出筛选后的增益单突变表
+        train_path / val_path: 可选，同步校验训练/验证集
     输出：
         统计摘要 dict
     """
+    print("=== validate pipeline inputs ===")
+    validate_pipeline_inputs(
+        single_mutant_path=input_path,
+        train_path=train_path,
+        val_path=val_path,
+        wt_path=wt_path,
+        label_col=label_col,
+    )
+
     df = pd.read_csv(input_path)
     for col in ("antibody_seq", "antigen_seq", "site", "wildtype", "mutation"):
         if col not in df.columns:
@@ -374,7 +530,15 @@ def build_library(
     mutants = parse_single_mutations(
         df, resolved_label, wt_ab, wt_ag, resolved_wt_kd, better_direction
     )
+    if not mutants:
+        raise ValueError(
+            "未筛到优于 WT 的单突变；请检查标签列 / better-direction / WT KD，"
+            "避免在校验未通过时进入 train/predict"
+        )
+
     if selected_singles_out:
+        out_sel = Path(selected_singles_out)
+        out_sel.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(
             [
                 {
@@ -389,12 +553,25 @@ def build_library(
                 }
                 for m in mutants
             ]
-        ).to_csv(selected_singles_out, index=False)
+        ).to_csv(out_sel, index=False)
 
     combos = enumerate_combinations(
         mutants, min_order, max_order, max_combinations, seed
     )
+    if not combos:
+        raise ValueError(
+            f"多突变组合数为 0（beneficial={len(mutants)}, "
+            f"min_order={min_order}, max_order={max_order}）"
+        )
+
     out_df = combinations_to_dataframe(combos, wt_ab, wt_ag)
+    # 输出再校验：满足 predict 输入契约
+    for col in ("antibody_seq", "antigen_seq"):
+        if col not in out_df.columns or out_df[col].isna().any():
+            raise ValueError(f"组合输出缺少有效列 {col}")
+    if out_df["antigen_seq"].map(len).nunique() != 1:
+        raise ValueError("组合输出抗原序列长度不一致")
+
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_path, index=False)
@@ -446,36 +623,44 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default="",
         help="可选：写出筛选后的增益单突变 CSV",
     )
+    p.add_argument(
+        "--train-path",
+        default="",
+        help="可选：训练 CSV，构建阶段一并校验，失败则阻止后续 train",
+    )
+    p.add_argument(
+        "--val-path",
+        default="",
+        help="可选：验证 CSV，构建阶段一并校验",
+    )
     return p.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI 入口：构建多突变库并打印摘要。"""
+    """CLI 入口：校验数据并构建多突变库。"""
     args = parse_args(argv)
-    summary = build_library(
-        input_path=args.input,
-        output_path=args.output,
-        wt_path=args.wt_path or None,
-        label_col=args.label_col,
-        wt_kd=args.wt_kd,
-        better_direction=args.better_direction,
-        min_order=args.min_order,
-        max_order=args.max_order,
-        max_combinations=args.max_combinations,
-        seed=args.seed,
-        selected_singles_out=args.selected_singles_out or None,
-    )
+    try:
+        summary = build_library(
+            input_path=args.input,
+            output_path=args.output,
+            wt_path=args.wt_path or None,
+            label_col=args.label_col,
+            wt_kd=args.wt_kd,
+            better_direction=args.better_direction,
+            min_order=args.min_order,
+            max_order=args.max_order,
+            max_combinations=args.max_combinations,
+            seed=args.seed,
+            selected_singles_out=args.selected_singles_out or None,
+            train_path=args.train_path or None,
+            val_path=args.val_path or None,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"ERROR: 数据校验/组合失败: {exc}", file=sys.stderr)
+        return 1
     print("=== build_multimutant_library summary ===")
     for k, v in summary.items():
         print(f"{k}={v}")
-    if summary["n_beneficial_singles"] == 0:
-        print(
-            "WARNING: 未筛到优于 WT 的单突变；请检查标签列/better-direction/WT KD",
-            file=sys.stderr,
-        )
-    if summary["n_combinations"] == 0:
-        print("ERROR: 多突变组合数为 0，无法继续预测", file=sys.stderr)
-        return 1
     return 0
 
 
