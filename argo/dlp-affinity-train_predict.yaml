@@ -7,8 +7,8 @@
 #   ./argo/dlp-affinity-train_predict.submit.sh
 #
 # DAG：
-#   1) build-combinations：校验 train/val/单突变数据，筛增益单突变并饱和组合
-#   2) templateRef dlp-affinity-train：数据校验通过后训练适配度模型
+#   1) build-combinations：校验数据；有 WT 则筛优于 WT，否则一致性序列 + Top-N 单突变再组合
+#   2) templateRef dlp-affinity-train：用完整 train-path 训练（不受 Top-N 筛选影响）
 #   3) templateRef dlp-affinity-predict：对多突变库做亲和力预测
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
@@ -64,18 +64,23 @@ spec:
       # 默认与 train-path 相同：从训练用单位点 KD 表筛选增益突变
       - name: single-mutant-path
         value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
+      # 为空则：若 train/单点也无 WT 行，走一致性序列 + top-n-singles
       - name: wt-path
-        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_wildtype_ref.csv
+        value: ""
       - name: label-col
         value: kd
       - name: better-direction
         value: lower
+      # 无野生型时，从单点数据按亲和力选 Top-N（位点去重）作为组合备选
+      - name: top-n-singles
+        value: "20"
       - name: min-order
         value: "2"
+      # Top-N=30 时请限制阶数/采样，避免组合爆炸（脚本在无限制时会直接失败）
       - name: max-order
-        value: "0"
+        value: "5"
       - name: max-combinations
-        value: "0"
+        value: "50000"
       - name: combo-output-path
         value: ""
       # --- 预测 ---
@@ -126,6 +131,8 @@ spec:
                   value: "{{workflow.parameters.label-col}}"
                 - name: better-direction
                   value: "{{workflow.parameters.better-direction}}"
+                - name: top-n-singles
+                  value: "{{workflow.parameters.top-n-singles}}"
                 - name: min-order
                   value: "{{workflow.parameters.min-order}}"
                 - name: max-order
@@ -219,6 +226,7 @@ spec:
           - name: predict-output-path
           - name: label-col
           - name: better-direction
+          - name: top-n-singles
           - name: min-order
           - name: max-order
           - name: max-combinations
@@ -290,10 +298,12 @@ spec:
           under_nas "$COMBO_OUT"
           under_nas "$PREDICT_OUT"
           SELECTED_OUT="${EXP_DIR}/combo/beneficial_singles.csv"
+          CONSENSUS_WT_OUT="${EXP_DIR}/combo/consensus_wildtype.csv"
 
           LOG_FILE="${EXP_DIR}/combo/argo_build_combinations.log"
           exec > >(tee -a "${LOG_FILE}") 2>&1
           echo "=== [build-combinations] validate+build start $(date -Iseconds) ==="
+          echo "top-n-singles={{inputs.parameters.top-n-singles}}"
 
           SCRIPT_PY="${WORK_ROOT}/script/build_multimutant_library.py"
           if [ ! -f "${SCRIPT_PY}" ]; then
@@ -308,11 +318,13 @@ spec:
             --train-path "${TRAIN_PATH}"
             --label-col "${LABEL_COL}"
             --better-direction "${BETTER_DIR}"
+            --top-n-singles "{{inputs.parameters.top-n-singles}}"
             --min-order "{{inputs.parameters.min-order}}"
             --max-order "{{inputs.parameters.max-order}}"
             --max-combinations "{{inputs.parameters.max-combinations}}"
             --seed "{{inputs.parameters.seed}}"
             --selected-singles-out "${SELECTED_OUT}"
+            --consensus-wt-out "${CONSENSUS_WT_OUT}"
           )
           if [ -n "${VAL_PATH}" ]; then
             ARGS+=(--val-path "${VAL_PATH}")

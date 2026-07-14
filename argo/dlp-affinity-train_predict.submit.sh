@@ -19,6 +19,7 @@ DEFAULT_TRAIN="${WORK_ROOT}/release_package/data/7KMG/LY-CoV555_DMS_train_model_
 TRAIN_PATH_RESOLVED="${TRAIN_PATH:-${DEFAULT_TRAIN}}"
 SINGLE_MUTANT_RESOLVED="${SINGLE_MUTANT_PATH:-${TRAIN_PATH_RESOLVED}}"
 BETTER_DIRECTION_RESOLVED="${BETTER_DIRECTION:-lower}"
+TOP_N_SINGLES_RESOLVED="${TOP_N_SINGLES:-30}"
 
 echo "=== DLP-Affinity train_predict submit ==="
 echo "template:          ${TEMPLATE_NAME}"
@@ -28,6 +29,7 @@ echo "dag:               build-combinations(validate) -> train -> predict"
 echo "train-path:        ${TRAIN_PATH_RESOLVED}"
 echo "single-mutant-path:${SINGLE_MUTANT_RESOLVED}"
 echo "better-direction:  ${BETTER_DIRECTION_RESOLVED}"
+echo "top-n-singles:     ${TOP_N_SINGLES_RESOLVED} (无 WT 时生效)"
 echo "combo/predict out: ${OUTPUT_DIR}/${EXP_NAME}/combo/"
 
 # 不用关联数组，兼容 macOS Bash 3.2
@@ -45,13 +47,14 @@ ARGS+=(-p "freeze-esm=${FREEZE_ESM:-true}")
 ARGS+=(-p "use-small=${USE_SMALL:-false}")
 ARGS+=(-p "gpu-model-series=${GPU_MODEL_SERIES:-A10}")
 ARGS+=(-p "single-mutant-path=${SINGLE_MUTANT_RESOLVED}")
-ARGS+=(-p "wt-path=${WT_PATH:-${WORK_ROOT}/release_package/data/7KMG/LY-CoV555_DMS_wildtype_ref.csv}")
 ARGS+=(-p "label-col=${LABEL_COL:-kd}")
 ARGS+=(-p "better-direction=${BETTER_DIRECTION_RESOLVED}")
+ARGS+=(-p "top-n-singles=${TOP_N_SINGLES_RESOLVED}")
 ARGS+=(-p "min-order=${MIN_ORDER:-2}")
-ARGS+=(-p "max-order=${MAX_ORDER:-0}")
-ARGS+=(-p "max-combinations=${MAX_COMBINATIONS:-0}")
+ARGS+=(-p "max-order=${MAX_ORDER:-3}")
+ARGS+=(-p "max-combinations=${MAX_COMBINATIONS:-5000}")
 ARGS+=(-p "batch-size=${BATCH_SIZE:-8}")
+[ -n "${WT_PATH:-}" ] && ARGS+=(-p "wt-path=${WT_PATH}")
 [ -n "${IMAGE:-}" ] && ARGS+=(-p "image=${IMAGE}")
 [ -n "${NAS_MOUNT_PATH:-}" ] && ARGS+=(-p "nas-mount-path=${NAS_MOUNT_PATH}")
 [ -n "${ESM_CHECKPOINT:-}" ] && ARGS+=(-p "esm-checkpoint=${ESM_CHECKPOINT}")
