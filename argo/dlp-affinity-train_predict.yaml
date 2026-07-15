@@ -21,9 +21,9 @@ spec:
   entrypoint: main
   activeDeadlineSeconds: 108000
   ttlStrategy:
-    secondsAfterCompletion: 86400
-    secondsAfterSuccess: 3600
-    secondsAfterFailure: 86400
+    secondsAfterCompletion: 2592000
+    secondsAfterSuccess: 2592000
+    secondsAfterFailure: 2592000
   arguments:
     parameters:
       - name: nas-mount-path
