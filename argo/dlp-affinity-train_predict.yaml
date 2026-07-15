@@ -1,15 +1,14 @@
 # DLP-Affinity 组合校验→训练→预测 串联 WorkflowTemplate
-# 依赖：先注册 train / predict 模板
-#   ./argo/dlp-affinity-template.create.sh all
-# 注册本模板：
-#   ./argo/dlp-affinity-template.create.sh train_predict
-# 投递：
-#   ./argo/dlp-affinity-train_predict.submit.sh
+# 注册：./argo/dlp-affinity-template.create.sh train_predict
+# 投递：./argo/dlp-affinity-train_predict.submit.sh
 #
-# DAG：
-#   1) build-combinations：校验数据；有 WT 则筛优于 WT，否则一致性序列 + Top-N 单突变再组合
-#   2) templateRef dlp-affinity-train：用完整 train-path 训练（不受 Top-N 筛选影响）
-#   3) templateRef dlp-affinity-predict：对多突变库做亲和力预测
+# 文件类入口：single-mutant-path / train-path / wt-path / output-dir；可选 val-path（空则回落 train-path）
+# 派生布局：
+#   output-dir/train/   ← 训练产物（exp-name=train）
+#   output-dir/combo/   ← 多突变组合与校验中间件
+#   output-dir/predict/ ← 预测结果
+#
+# DAG：build-combinations → train → predict
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -31,21 +30,19 @@ spec:
         value: /mnt
       - name: image
         value: beijing-acr-cr-registry-vpc.cn-beijing.cr.aliyuncs.com/biocloud/enzyme_dev:DLP_Affinity.v1.0.0
-      # --- 训练（单位点突变验证 KD）---
+      # --- 文件入口（仅此四项）---
+      - name: single-mutant-path
+        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
       - name: train-path
         value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
+      # 可选；空字符串时 DAG 传入 train 时回落为 train-path（保证写出 best_model.pt）
       - name: val-path
-        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_val_model_input.csv
-      - name: esm-model-path
-        value: /mnt/nas1/liubo/models/esm2_t30_150M_UR50D
-      - name: esm-checkpoint
+        value: ""
+      - name: wt-path
         value: ""
       - name: output-dir
         value: /mnt/nas1/liubo/project/DLP_Affinity/outputs
-      - name: work-root
-        value: /mnt/nas1/liubo/project/DLP_Affinity
-      - name: exp-name
-        value: dlp-affinity-train-predict
+      # --- 运行/算法参数（非路径）---
       - name: num-epochs
         value: "50"
       - name: seed
@@ -56,46 +53,27 @@ spec:
         value: "true"
       - name: use-small
         value: "false"
-      - name: config-path
-        value: ""
       - name: gpu-model-series
         value: A10
-      # --- 多突变组合 ---
-      # 默认与 train-path 相同：从训练用单位点 KD 表筛选增益突变
-      - name: single-mutant-path
-        value: /mnt/nas1/liubo/project/DLP_Affinity/release_package/data/7KMG/LY-CoV555_DMS_train_model_input.csv
-      # 为空则：若 train/单点也无 WT 行，走一致性序列 + top-n-singles
-      - name: wt-path
-        value: ""
       - name: label-col
         value: kd
       - name: better-direction
         value: lower
-      # 无野生型时，从单点数据按亲和力选 Top-N（位点去重）作为组合备选
       - name: top-n-singles
         value: "20"
       - name: min-order
         value: "2"
-      # Top-N=30 时请限制阶数/采样，避免组合爆炸（脚本在无限制时会直接失败）
       - name: max-order
         value: "5"
       - name: max-combinations
         value: "50000"
-      - name: combo-output-path
-        value: ""
-      # --- 预测 ---
-      # checkpoint / input-path / output-path 为 predict 模板 inputs 默认值占位；
-      # DAG 中由 train / build-combinations 输出覆盖，勿依赖此处空值投递
-      - name: checkpoint
-        value: ""
-      - name: input-path
-        value: ""
-      - name: output-path
-        value: ""
-      - name: predict-output-path
-        value: ""
       - name: batch-size
         value: "8"
+      # templateRef 子模板可选路径占位（空=未使用；避免残留 {{workflow.parameters.*}}）
+      - name: esm-checkpoint
+        value: ""
+      - name: config-path
+        value: ""
   volumes:
     - name: nas-data
       persistentVolumeClaim:
@@ -104,7 +82,6 @@ spec:
     - name: main
       dag:
         tasks:
-          # 先组合+校验；失败则不启动 GPU 训练/预测
           - name: build-combinations
             template: build-combinations
             arguments:
@@ -113,20 +90,10 @@ spec:
                   value: "{{workflow.parameters.single-mutant-path}}"
                 - name: train-path
                   value: "{{workflow.parameters.train-path}}"
-                - name: val-path
-                  value: "{{workflow.parameters.val-path}}"
                 - name: wt-path
                   value: "{{workflow.parameters.wt-path}}"
-                - name: work-root
-                  value: "{{workflow.parameters.work-root}}"
                 - name: output-dir
                   value: "{{workflow.parameters.output-dir}}"
-                - name: exp-name
-                  value: "{{workflow.parameters.exp-name}}"
-                - name: combo-output-path
-                  value: "{{workflow.parameters.combo-output-path}}"
-                - name: predict-output-path
-                  value: "{{workflow.parameters.predict-output-path}}"
                 - name: label-col
                   value: "{{workflow.parameters.label-col}}"
                 - name: better-direction
@@ -159,18 +126,21 @@ spec:
                   value: "{{workflow.parameters.image}}"
                 - name: train-path
                   value: "{{workflow.parameters.train-path}}"
+                # 未单独提供 val-path 时使用 train-path，避免无验证集不写 best_model.pt
                 - name: val-path
-                  value: "{{workflow.parameters.val-path}}"
+                  value: "{{=workflow.parameters['val-path'] != '' ? workflow.parameters['val-path'] : workflow.parameters['train-path']}}"
                 - name: esm-model-path
-                  value: "{{workflow.parameters.esm-model-path}}"
+                  value: /mnt/nas1/liubo/models/esm2_t30_150M_UR50D
                 - name: esm-checkpoint
                   value: "{{workflow.parameters.esm-checkpoint}}"
+                - name: config-path
+                  value: "{{workflow.parameters.config-path}}"
                 - name: output-dir
                   value: "{{workflow.parameters.output-dir}}"
                 - name: work-root
-                  value: "{{workflow.parameters.work-root}}"
+                  value: /mnt/nas1/liubo/project/DLP_Affinity
                 - name: exp-name
-                  value: "{{workflow.parameters.exp-name}}"
+                  value: train
                 - name: num-epochs
                   value: "{{workflow.parameters.num-epochs}}"
                 - name: seed
@@ -181,8 +151,6 @@ spec:
                   value: "{{workflow.parameters.freeze-esm}}"
                 - name: use-small
                   value: "{{workflow.parameters.use-small}}"
-                - name: config-path
-                  value: "{{workflow.parameters.config-path}}"
                 - name: gpu-model-series
                   value: "{{workflow.parameters.gpu-model-series}}"
 
@@ -200,11 +168,11 @@ spec:
                 - name: checkpoint
                   value: "{{tasks.train.outputs.parameters.best-model-path}}"
                 - name: input-path
-                  value: "{{tasks.build-combinations.outputs.parameters.predict-input-path}}"
+                  value: "{{workflow.parameters.output-dir}}/combo/multimutant_predict_input.csv"
                 - name: output-path
-                  value: "{{tasks.build-combinations.outputs.parameters.predict-output-path}}"
+                  value: "{{workflow.parameters.output-dir}}/predict/predictions.csv"
                 - name: work-root
-                  value: "{{workflow.parameters.work-root}}"
+                  value: /mnt/nas1/liubo/project/DLP_Affinity
                 - name: batch-size
                   value: "{{workflow.parameters.batch-size}}"
                 - name: device
@@ -217,13 +185,8 @@ spec:
         parameters:
           - name: single-mutant-path
           - name: train-path
-          - name: val-path
           - name: wt-path
-          - name: work-root
           - name: output-dir
-          - name: exp-name
-          - name: combo-output-path
-          - name: predict-output-path
           - name: label-col
           - name: better-direction
           - name: top-n-singles
@@ -233,17 +196,6 @@ spec:
           - name: seed
           - name: image
           - name: nas-mount-path
-      outputs:
-        parameters:
-          - name: predict-input-path
-            valueFrom:
-              path: /tmp/predict_input_path.txt
-          - name: predict-output-path
-            valueFrom:
-              path: /tmp/predict_output_path.txt
-          - name: selected-singles-path
-            valueFrom:
-              path: /tmp/selected_singles_path.txt
       retryStrategy:
         limit: "2"
         retryPolicy: "Always"
@@ -261,15 +213,11 @@ spec:
           set -euo pipefail
 
           NAS="{{inputs.parameters.nas-mount-path}}"
-          WORK_ROOT="{{inputs.parameters.work-root}}"
+          WORK_ROOT="/mnt/nas1/liubo/project/DLP_Affinity"
           OUTPUT_DIR="{{inputs.parameters.output-dir}}"
-          EXP_NAME="{{inputs.parameters.exp-name}}"
           SINGLE_PATH="{{inputs.parameters.single-mutant-path}}"
           TRAIN_PATH="{{inputs.parameters.train-path}}"
-          VAL_PATH="{{inputs.parameters.val-path}}"
           WT_PATH="{{inputs.parameters.wt-path}}"
-          COMBO_OUT="{{inputs.parameters.combo-output-path}}"
-          PREDICT_OUT="{{inputs.parameters.predict-output-path}}"
           LABEL_COL="{{inputs.parameters.label-col}}"
           BETTER_DIR="{{inputs.parameters.better-direction}}"
 
@@ -284,31 +232,26 @@ spec:
           under_nas "$OUTPUT_DIR"
           under_nas "$SINGLE_PATH"
           under_nas "$TRAIN_PATH"
-          [ -n "$VAL_PATH" ] && under_nas "$VAL_PATH"
           [ -n "$WT_PATH" ] && under_nas "$WT_PATH"
 
-          EXP_DIR="${OUTPUT_DIR}/${EXP_NAME}"
-          mkdir -p "${EXP_DIR}/combo"
-          if [ -z "${COMBO_OUT}" ]; then
-            COMBO_OUT="${EXP_DIR}/combo/multimutant_predict_input.csv"
-          fi
-          if [ -z "${PREDICT_OUT}" ]; then
-            PREDICT_OUT="${EXP_DIR}/combo/multimutant_predictions.csv"
-          fi
-          under_nas "$COMBO_OUT"
-          under_nas "$PREDICT_OUT"
-          SELECTED_OUT="${EXP_DIR}/combo/beneficial_singles.csv"
-          CONSENSUS_WT_OUT="${EXP_DIR}/combo/consensus_wildtype.csv"
+          # 固定派生：output-dir/{combo,predict}
+          COMBO_DIR="${OUTPUT_DIR}/combo"
+          PREDICT_DIR="${OUTPUT_DIR}/predict"
+          mkdir -p "${COMBO_DIR}" "${PREDICT_DIR}"
+          COMBO_OUT="${COMBO_DIR}/multimutant_predict_input.csv"
+          SELECTED_OUT="${COMBO_DIR}/beneficial_singles.csv"
+          CONSENSUS_WT_OUT="${COMBO_DIR}/consensus_wildtype.csv"
 
-          LOG_FILE="${EXP_DIR}/combo/argo_build_combinations.log"
+          LOG_FILE="${COMBO_DIR}/argo_build_combinations.log"
           exec > >(tee -a "${LOG_FILE}") 2>&1
           echo "=== [build-combinations] validate+build start $(date -Iseconds) ==="
+          echo "combo_dir=${COMBO_DIR}"
+          echo "predict_dir=${PREDICT_DIR}"
           echo "top-n-singles={{inputs.parameters.top-n-singles}}"
 
           SCRIPT_PY="${WORK_ROOT}/script/build_multimutant_library.py"
           if [ ! -f "${SCRIPT_PY}" ]; then
             echo "ERROR: script not found: ${SCRIPT_PY}" >&2
-            echo "请将仓库 script/build_multimutant_library.py 同步到 work-root" >&2
             exit 1
           fi
 
@@ -326,9 +269,6 @@ spec:
             --selected-singles-out "${SELECTED_OUT}"
             --consensus-wt-out "${CONSENSUS_WT_OUT}"
           )
-          if [ -n "${VAL_PATH}" ]; then
-            ARGS+=(--val-path "${VAL_PATH}")
-          fi
           if [ -n "${WT_PATH}" ]; then
             ARGS+=(--wt-path "${WT_PATH}")
           fi
@@ -346,10 +286,6 @@ spec:
             exit 1
           fi
           echo "validation ok: n_combinations=${N_COMBO}"
-
-          printf '%s' "${COMBO_OUT}" > /tmp/predict_input_path.txt
-          printf '%s' "${PREDICT_OUT}" > /tmp/predict_output_path.txt
-          printf '%s' "${SELECTED_OUT}" > /tmp/selected_singles_path.txt
           echo "=== [build-combinations] done $(date -Iseconds) combo=${COMBO_OUT} ==="
         resources:
           requests:

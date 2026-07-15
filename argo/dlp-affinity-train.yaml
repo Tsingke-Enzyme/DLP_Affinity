@@ -94,12 +94,13 @@ spec:
             value: "{{workflow.parameters.gpu-model-series}}"
       outputs:
         parameters:
+          # 落在 NAS output-dir，与 main/wait 共享挂载（勿用容器私有 /tmp）
           - name: best-model-path
             valueFrom:
-              path: /tmp/best_model_path.txt
+              path: "{{inputs.parameters.output-dir}}/argo_best_model_path.txt"
           - name: experiment-dir
             valueFrom:
-              path: /tmp/experiment_dir.txt
+              path: "{{inputs.parameters.output-dir}}/argo_experiment_dir.txt"
       retryStrategy:
         limit: "2"
         retryPolicy: "Always"
@@ -245,8 +246,8 @@ spec:
             exit 1
           fi
 
-          printf '%s' "${BEST_MODEL}" > /tmp/best_model_path.txt
-          printf '%s' "${EXP_DIR}" > /tmp/experiment_dir.txt
+          printf '%s' "${BEST_MODEL}" > "${OUTPUT_DIR}/argo_best_model_path.txt"
+          printf '%s' "${EXP_DIR}" > "${OUTPUT_DIR}/argo_experiment_dir.txt"
           echo "=== [dlp-affinity-train] done $(date -Iseconds) best_model=${BEST_MODEL} ==="
         env:
           - name: HF_ENDPOINT
