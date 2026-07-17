@@ -93,7 +93,7 @@ class AffinityDataset(Dataset):
         seq_ab = sample['seq_ab']
         seq_ag = sample['seq_ag']
         kd = sample['kd']
-        if self.log_transform_kd: kd = np.log10(kd + 1e-10)
+        if self.log_transform_kd: kd = np.log10(kd + 1e-20)  # 防 log(0)；远小于常见 K_D 下限
         return {
             'seq_ab': seq_ab,
             'seq_ag': seq_ag,
