@@ -14,11 +14,11 @@
 
 一条训练样本的逻辑结构：
 
-| 字段 | 含义 | 7KMG CSV 列名示例 |
-|------|------|-------------------|
-| 抗体序列 | 氨基酸字符串 | `antibody_seq` |
-| 抗原序列 | 氨基酸字符串 | `antigen_seq` |
-| 标签 | 连续目标（默认 log 空间学习） | `escape_fraction` |
+| 字段     | 含义                          | 7KMG CSV 列名示例 |
+| -------- | ----------------------------- | ----------------- |
+| 抗体序列 | 氨基酸字符串                  | `antibody_seq`    |
+| 抗原序列 | 氨基酸字符串                  | `antigen_seq`     |
+| 标签     | 连续目标（默认 log 空间学习） | `escape_fraction` |
 
 推理时输入只需两条序列，模型给出 \(\hat{y}\)（默认在 log 空间），再按需反变换。
 
@@ -47,24 +47,24 @@ predict.py 预测
 
 本项目在 ESM2 之上接**任务相关头网络**，把一对（抗体、抗原）表示压成一个标量。当前集群任务默认更轻量：
 
-| 项 | 当前默认 |
-|----|----------|
-| 基座 | NAS 上 `esm2_t30_150M_UR50D`（hidden_dim=640） |
-| ESM 是否更新 | **冻结**（`--freeze_esm`） |
-| 实际学习对象 | R2R + GSPE + Regression Head |
-| Epochs | **50**，无早停 |
-| 选模策略 | 验证集 loss 最低时保存 `best_model.pt` |
+| 项           | 当前默认                                       |
+| ------------ | ---------------------------------------------- |
+| 基座         | NAS 上 `esm2_t30_150M_UR50D`（hidden_dim=640） |
+| ESM 是否更新 | **冻结**（`--freeze_esm`）                     |
+| 实际学习对象 | R2R + GSPE + Regression Head                   |
+| Epochs       | **50**，无早停                                 |
+| 选模策略     | 验证集 loss 最低时保存 `best_model.pt`         |
 
 这属于**冻结骨干 + 下游头微调**：ESM2 当固定特征提取器，只学「如何从这些特征得到标签」。
 
 可选升级路径：
 
-| 档位 | ESM | 场景 |
-|------|-----|------|
-| A. 冻骨干 | 不更新 | 数据少、省显存、baseline（当前） |
-| B. 解冻末几层 | `unfreeze_last_n_layers` | 适度适配 |
-| C. 全量微调 | `freeze_esm=false` | 数据多；学习率通常更小 |
-| D. 先 MLM 再回归 | `--esm_checkpoint` | 有抗体域序列时域适应 |
+| 档位             | ESM                      | 场景                             |
+| ---------------- | ------------------------ | -------------------------------- |
+| A. 冻骨干        | 不更新                   | 数据少、省显存、baseline（当前） |
+| B. 解冻末几层    | `unfreeze_last_n_layers` | 适度适配                         |
+| C. 全量微调      | `freeze_esm=false`       | 数据多；学习率通常更小           |
+| D. 先 MLM 再回归 | `--esm_checkpoint`       | 有抗体域序列时域适应             |
 
 > 段末注释：MLM（Masked Language Modeling，掩码语言建模）是「挖洞填词」式预训练目标；亲和力阶段本身不跑 MLM。
 
@@ -171,12 +171,12 @@ L = \frac{1}{N}\sum_{i=1}^{N}(\hat{y}_i - y_i)^2
 
 每轮另外做：
 
-| 动作 | 含义 |
-|------|------|
-| 记录 train loss | 拟合程度 |
-| 验证 val loss / correlation / RMSE | 泛化打分 |
-| val loss 创新低 → 覆盖 `best_model.pt` | 保留验证最优快照 |
-| 保存 `epoch_n.pt` | 轨迹上第 \(n\) 轮整模状态（含优化器） |
+| 动作                                   | 含义                                  |
+| -------------------------------------- | ------------------------------------- |
+| 记录 train loss                        | 拟合程度                              |
+| 验证 val loss / correlation / RMSE     | 泛化打分                              |
+| val loss 创新低 → 覆盖 `best_model.pt` | 保留验证最优快照                      |
+| 保存 `epoch_n.pt`                      | 轨迹上第 \(n\) 轮整模状态（含优化器） |
 
 ### 5.3 若 best_model 来自中间某轮是什么意思
 
@@ -208,12 +208,12 @@ L = \frac{1}{N}\sum_{i=1}^{N}(\hat{y}_i - y_i)^2
 
 ## 6. 如何读日志指标
 
-| 指标 | 含义 |
-|------|------|
-| Train Loss | 训练拟合；持续下降常见 |
-| Val Loss | **当前写 `best_model` 的主判据** |
-| Correlation | 预测排序与真实排序一致性 |
-| RMSE / MAE | 整体偏差 |
+| 指标        | 含义                             |
+| ----------- | -------------------------------- |
+| Train Loss  | 训练拟合；持续下降常见           |
+| Val Loss    | **当前写 `best_model` 的主判据** |
+| Correlation | 预测排序与真实排序一致性         |
+| RMSE / MAE  | 整体偏差                         |
 
 排亲和力相关任务时，除了 val loss，也应看 correlation 是否同步改善。
 
@@ -225,47 +225,47 @@ L = \frac{1}{N}\sum_{i=1}^{N}(\hat{y}_i - y_i)^2
 
 ### 7.1 优先调（收益/可控性强）
 
-| 参数 | 默认约值 | 效果 |
-|------|----------|------|
-| `num_epochs` | 50 | 训练多久；建议配合早停 |
+| 参数            | 默认约值            | 效果                                                   |
+| --------------- | ------------------- | ------------------------------------------------------ |
+| `num_epochs`    | 50                  | 训练多久；建议配合早停                                 |
 | `learning_rate` | \(1\times 10^{-4}\) | 过大震荡，过小偏慢；解冻 ESM 时常降到 \(10^{-5}\) 量级 |
-| `batch_size` | 8 | 显存与梯度噪声 |
-| `freeze_esm` | true（当前任务） | 是否更新骨干 |
-| `warmup_steps` | 100 | 前期热身步数 |
-| `weight_decay` | 0.01 | 正则强度 |
-| `seed` | 42 | 可复现；多 seed 评估稳健性 |
+| `batch_size`    | 8                   | 显存与梯度噪声                                         |
+| `freeze_esm`    | true（当前任务）    | 是否更新骨干                                           |
+| `warmup_steps`  | 100                 | 前期热身步数                                           |
+| `weight_decay`  | 0.01                | 正则强度                                               |
+| `seed`          | 42                  | 可复现；多 seed 评估稳健性                             |
 
 ### 7.2 结构与损失
 
-| 参数 | 作用 |
-|------|------|
-| `regressor.hidden_dims` / `dropout` | 回归头容量与正则 |
-| `r2r.*` | 见 [r2r.md](./r2r.md) |
-| `gspe.*` | 见 [gspe.md](./gspe.md) |
-| `use_huber_loss` | 对异常点更稳 |
-| `use_correlation_loss` | 直接奖励相关排序 |
+| 参数                                | 作用                    |
+| ----------------------------------- | ----------------------- |
+| `regressor.hidden_dims` / `dropout` | 回归头容量与正则        |
+| `r2r.*`                             | 见 [r2r.md](./r2r.md)   |
+| `gspe.*`                            | 见 [gspe.md](./gspe.md) |
+| `use_huber_loss`                    | 对异常点更稳            |
+| `use_correlation_loss`              | 直接奖励相关排序        |
 
 ### 7.3 数据与骨干
 
-| 参数 | 注意 |
-|------|------|
-| `log_transform_kd` | 须与评估尺度一致 |
-| `max_ab_len` / `max_ag_len` | 截断过短丢信息 |
-| `esm.model_name` / `--esm_model` | 规模与显存 |
-| `--esm_checkpoint` | MLM 微调后的 `.pt` |
-| `lora.enabled` | 参数高效微调路径（配置有预留） |
+| 参数                             | 注意                           |
+| -------------------------------- | ------------------------------ |
+| `log_transform_kd`               | 须与评估尺度一致               |
+| `max_ab_len` / `max_ag_len`      | 截断过短丢信息                 |
+| `esm.model_name` / `--esm_model` | 规模与显存                     |
+| `--esm_checkpoint`               | MLM 微调后的 `.pt`             |
+| `lora.enabled`                   | 参数高效微调路径（配置有预留） |
 
 ---
 
 ## 8. 与当前 Argo 任务的对应关系
 
-| 项 | 现状 |
-|----|------|
-| 入口 | `argo/dlp-affinity-train.submit.sh` |
-| 基座 | `/mnt/nas1/liubo/models/esm2_t30_150M_UR50D` |
-| 代码优先级 | `${WORK_ROOT}/release_package`，否则镜像 `/app` |
-| 设备 | `cuda`；资源 `nvidia.com/gpu: 1`，型号标签 A10 |
-| 输出目录 | `${OUTPUT_DIR}/${EXP_NAME}/`，含 `best_model.pt`、`epoch_*.pt`、`argo_main.log` |
+| 项         | 现状                                                                            |
+| ---------- | ------------------------------------------------------------------------------- |
+| 入口       | `argo/dlp-affinity-train.submit.sh`                                             |
+| 基座       | `/mnt/nas1/liubo/models/esm2_t30_150M_UR50D`                                    |
+| 代码优先级 | `${WORK_ROOT}/release_package`，否则镜像 `/app`                                 |
+| 设备       | `cuda`；资源 `nvidia.com/gpu: 1`，型号标签 A10                                  |
+| 输出目录   | `${OUTPUT_DIR}/${EXP_NAME}/`，含 `best_model.pt`、`epoch_*.pt`、`argo_main.log` |
 
 日志侧若见 pooler 权重「newly initialized」，在冻结 ESM、不接 pooler 训练时通常可忽略，只要 encoder 主干从本地 HF 目录加载成功即可。
 
@@ -284,13 +284,13 @@ L = \frac{1}{N}\sum_{i=1}^{N}(\hat{y}_i - y_i)^2
 
 ## 参考代码路径
 
-| 路径 | 内容 |
-|------|------|
-| `release_package/train.py` | 训练循环、选模 |
-| `release_package/configs/config.py` | 全部默认超参 |
+| 路径                                     | 内容           |
+| ---------------------------------------- | -------------- |
+| `release_package/train.py`               | 训练循环、选模 |
+| `release_package/configs/config.py`      | 全部默认超参   |
 | `release_package/models/dlp_affinity.py` | 总模型与回归头 |
-| `release_package/models/esm_encoder.py` | ESM2 编码 |
-| `release_package/models/r2r.py` | R2R |
-| `release_package/models/gspe.py` | GSPE |
-| `release_package/data/dataset.py` | 数据加载 |
-| `argo/dlp-affinity-train.yaml` | 集群投递模板 |
+| `release_package/models/esm_encoder.py`  | ESM2 编码      |
+| `release_package/models/r2r.py`          | R2R            |
+| `release_package/models/gspe.py`         | GSPE           |
+| `release_package/data/dataset.py`        | 数据加载       |
+| `argo/dlp-affinity-train.yaml`           | 集群投递模板   |

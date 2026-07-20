@@ -5,6 +5,7 @@
   - 蛋白质工程中的 combinatorial / saturation mutagenesis 库构建；
   - Python 标准库 itertools.combinations 做穷举组合（成熟、无额外部署）。
 应用场景：将验证过的增益单突变拼成多突变候选库，供亲和力模型批量预测。
+支持抗体链或抗原链上的单位点突变（--mutation-target auto|antibody|antigen）。
 潜在风险：位点一多组合数爆炸（2^n）；同数据若混用 escape_fraction（WT=0）会筛不出增益突变。
 """
 
@@ -17,7 +18,7 @@ import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Literal, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -34,6 +35,9 @@ SEQ_AB_ALIASES = ("antibody_seq", "seq_ab", "ab_seq")
 SEQ_AG_ALIASES = ("antigen_seq", "seq_ag", "ag_seq")
 LABEL_ALIASES = ("kd", "KD", "affinity", "escape_fraction", "label", "pkd", "pKD")
 
+# 突变施加链：antibody=抗体工程库；antigen=抗原/DMS（如 7KMG）
+MutationTarget = Literal["antibody", "antigen"]
+
 
 @dataclass(frozen=True)
 class SingleMutation:
@@ -47,6 +51,7 @@ class SingleMutation:
     antigen_seq: str
     kd: float
     seq_index: int
+    target: MutationTarget
 
 
 def _resolve_label_col(columns: Sequence[str], preferred: str) -> str:
@@ -78,13 +83,91 @@ def _is_wildtype_row(row: pd.Series) -> bool:
     return False
 
 
-def _diff_indices(wt_seq: str, mut_seq: str) -> List[int]:
-    """比较野生型与突变体抗原序列，返回发生替换的 0-based 下标。"""
+def _diff_indices(wt_seq: str, mut_seq: str, role: str = "seq") -> List[int]:
+    """比较野生型与突变体序列，返回发生替换的 0-based 下标。
+
+    输入：
+        wt_seq / mut_seq: 野生型与突变体氨基酸串
+        role: 报错时的链角色名（antibody/antigen/seq）
+    输出：
+        差异位置列表（0-based）
+    """
     if len(wt_seq) != len(mut_seq):
         raise ValueError(
-            f"抗原序列长度不一致: wt={len(wt_seq)} mut={len(mut_seq)}"
+            f"{role} 序列长度不一致: wt={len(wt_seq)} mut={len(mut_seq)}"
         )
     return [i for i, (a, b) in enumerate(zip(wt_seq, mut_seq)) if a != b]
+
+
+def _classify_row_target(
+    ab: str, ag: str, wt_ab: str, wt_ag: str
+) -> Optional[MutationTarget]:
+    """判断一行相对 WT 属于抗体单位点、抗原单位点，或无法归类。
+
+    输入：行序列与野生型序列。
+    输出：'antibody' / 'antigen' / None（长度不一致、多位点或双链均变）。
+    """
+    try:
+        ab_diffs = _diff_indices(wt_ab, ab, role="antibody")
+        ag_diffs = _diff_indices(wt_ag, ag, role="antigen")
+    except ValueError:
+        return None
+    if len(ab_diffs) == 1 and len(ag_diffs) == 0:
+        return "antibody"
+    if len(ag_diffs) == 1 and len(ab_diffs) == 0:
+        return "antigen"
+    return None
+
+
+def detect_mutation_target(
+    df: pd.DataFrame,
+    wt_ab: str,
+    wt_ag: str,
+    requested: str = "auto",
+) -> MutationTarget:
+    """解析突变目标链。
+
+    输入：
+        df: 单点表；wt_ab / wt_ag: 野生型；requested: auto|antibody|antigen
+    输出：
+        MutationTarget
+    处理逻辑：
+        auto 时统计「固定链=WT 且突变链恰差 1 位」的行数；仅一侧有票则选定，
+        两侧皆有或皆无则报错（禁止静默猜测）。
+    """
+    if requested in {"antibody", "antigen"}:
+        print(f"[mutation-target] {requested} (explicit)")
+        return requested  # type: ignore[return-value]
+    if requested != "auto":
+        raise ValueError(
+            f"mutation-target 必须是 auto|antibody|antigen，收到 {requested!r}"
+        )
+
+    ab_col, ag_col = _resolve_seq_cols(df)
+    n_ab = 0
+    n_ag = 0
+    for _, row in df.iterrows():
+        if _is_wildtype_row(row):
+            continue
+        kind = _classify_row_target(
+            str(row[ab_col]), str(row[ag_col]), wt_ab, wt_ag
+        )
+        if kind == "antibody":
+            n_ab += 1
+        elif kind == "antigen":
+            n_ag += 1
+
+    if n_ab > 0 and n_ag == 0:
+        print(f"[mutation-target] antibody (n={n_ab})")
+        return "antibody"
+    if n_ag > 0 and n_ab == 0:
+        print(f"[mutation-target] antigen (n={n_ag})")
+        return "antigen"
+    raise ValueError(
+        "无法自动判定 mutation-target："
+        f"antibody 单位点行={n_ab}, antigen 单位点行={n_ag}；"
+        "请用 --mutation-target antibody|antigen 显式指定"
+    )
 
 
 def _infer_seq_index(
@@ -276,28 +359,59 @@ def _row_to_single_mutation(
     ab_col: str,
     ag_col: str,
     *,
-    strict_ab: bool,
+    target: MutationTarget,
+    strict: bool,
 ) -> Optional[SingleMutation]:
-    """将一行单点数据转为 SingleMutation；无法定位突变则返回 None。"""
+    """将一行单点数据转为 SingleMutation；无法定位突变则返回 None。
+
+    输入：
+        row / label_col / wt_* / 序列列名
+        target: 突变施加链（antibody|antigen）
+        strict: True 时固定链与 WT 不一致则抛错；False 则跳过该行
+    输出：
+        SingleMutation 或 None
+    处理逻辑：
+        固定链必须等于 WT；突变链相对 WT 恰差 1 位；注释列做交叉校验告警。
+    """
     if _is_wildtype_row(row):
         return None
     kd = float(row[label_col])
     ab = str(row[ab_col])
     ag = str(row[ag_col])
-    if ab != wt_ab:
-        if strict_ab:
+
+    if target == "antigen":
+        fixed_ok = ab == wt_ab
+        fixed_role = "antibody_seq"
+        try:
+            diffs = _diff_indices(wt_ag, ag, role="antigen")
+        except ValueError:
+            if strict:
+                raise
+            return None
+        wt_mut_seq, mut_seq = wt_ag, ag
+    else:
+        fixed_ok = ag == wt_ag
+        fixed_role = "antigen_seq"
+        try:
+            diffs = _diff_indices(wt_ab, ab, role="antibody")
+        except ValueError:
+            if strict:
+                raise
+            return None
+        wt_mut_seq, mut_seq = wt_ab, ab
+
+    if not fixed_ok:
+        if strict:
             raise ValueError(
-                f"antibody_seq 与野生型不一致: mutation_id={row.get('mutation_id')}"
+                f"{fixed_role} 与野生型不一致: mutation_id={row.get('mutation_id')}"
             )
         return None
 
-    diffs = _diff_indices(wt_ag, ag)
     if len(diffs) != 1:
-        # 非严格单位点或与一致性序列不一致时跳过
         return None
     idx = diffs[0]
-    wildtype_aa = wt_ag[idx]
-    mutation_aa = ag[idx]
+    wildtype_aa = wt_mut_seq[idx]
+    mutation_aa = mut_seq[idx]
     if wildtype_aa == mutation_aa:
         return None
 
@@ -310,12 +424,11 @@ def _row_to_single_mutation(
     else:
         site = idx + 1
 
-    # 若表内注释可用则交叉校验
     ann_wt = str(row.get("wildtype", "") or "").strip()
     ann_mut = str(row.get("mutation", "") or "").strip()
     if ann_wt and ann_wt != wildtype_aa:
         print(
-            f"WARNING: site={site} 注释 wildtype={ann_wt} 与一致性序列 {wildtype_aa} 不一致，采用一致性"
+            f"WARNING: site={site} 注释 wildtype={ann_wt} 与序列 {wildtype_aa} 不一致，采用序列"
         )
     if ann_mut and ann_mut != mutation_aa:
         print(
@@ -335,6 +448,7 @@ def _row_to_single_mutation(
         antigen_seq=ag,
         kd=kd,
         seq_index=idx,
+        target=target,
     )
 
 
@@ -345,6 +459,7 @@ def parse_single_mutations(
     wt_ag: str,
     wt_kd: float,
     better_direction: str,
+    target: MutationTarget,
 ) -> List[SingleMutation]:
     """筛选亲和力优于野生型的单位点突变。"""
     if better_direction not in {"lower", "higher"}:
@@ -363,7 +478,14 @@ def parse_single_mutations(
             if not (kd > wt_kd):
                 continue
         m = _row_to_single_mutation(
-            row, label_col, wt_ab, wt_ag, ab_col, ag_col, strict_ab=True
+            row,
+            label_col,
+            wt_ab,
+            wt_ag,
+            ab_col,
+            ag_col,
+            target=target,
+            strict=True,
         )
         if m is not None:
             mutants.append(m)
@@ -377,12 +499,13 @@ def select_top_affinity_singles(
     wt_ag: str,
     better_direction: str,
     top_n: int,
+    target: MutationTarget,
 ) -> List[SingleMutation]:
     """无野生型 KD 时：按亲和力取 Top-N（位点去重）作为组合备选。
 
     输入：
         df: 单点突变表
-        label_col / wt_ab / wt_ag / better_direction / top_n
+        label_col / wt_ab / wt_ag / better_direction / top_n / target
     输出：
         至多 top_n 个位点互异的最优单突变
     处理逻辑：
@@ -397,15 +520,22 @@ def select_top_affinity_singles(
     parsed: List[SingleMutation] = []
     for _, row in df.iterrows():
         m = _row_to_single_mutation(
-            row, label_col, wt_ab, wt_ag, ab_col, ag_col, strict_ab=False
+            row,
+            label_col,
+            wt_ab,
+            wt_ag,
+            ab_col,
+            ag_col,
+            target=target,
+            strict=False,
         )
         if m is not None:
             parsed.append(m)
 
     if not parsed:
         raise ValueError(
-            "无法从单点数据解析出与一致性野生型相差恰好 1 位的突变；"
-            "请检查序列是否为真正的单位点突变库"
+            f"无法从单点数据解析出相对 WT 在 {target} 链上恰差 1 位的突变；"
+            "请检查序列是否为真正的单位点突变库，或调整 --mutation-target"
         )
 
     reverse = better_direction == "higher"
@@ -422,8 +552,8 @@ def select_top_affinity_singles(
             break
 
     print(
-        f"[top-n] direction={better_direction} candidates_parsed={len(parsed)} "
-        f"selected={len(selected)} top_n={top_n} "
+        f"[top-n] target={target} direction={better_direction} "
+        f"candidates_parsed={len(parsed)} selected={len(selected)} top_n={top_n} "
         f"kd_range=[{selected[-1].kd}, {selected[0].kd}]"
     )
     return selected
@@ -474,9 +604,16 @@ def enumerate_combinations(
     return selected
 
 
-def apply_combo(wt_ag: str, combo: Sequence[SingleMutation]) -> str:
-    """将一组位点不冲突的突变施加到野生型抗原序列。"""
-    chars = list(wt_ag)
+def apply_combo(wt_seq: str, combo: Sequence[SingleMutation]) -> str:
+    """将一组位点不冲突的突变施加到野生型目标链序列。
+
+    输入：
+        wt_seq: 野生型目标链（抗体或抗原）
+        combo: 位点不冲突的 SingleMutation 序列
+    输出：
+        施加突变后的序列
+    """
+    chars = list(wt_seq)
     for m in sorted(combo, key=lambda x: x.seq_index):
         if chars[m.seq_index] != m.wildtype:
             raise ValueError(
@@ -491,19 +628,31 @@ def combinations_to_dataframe(
     combos: Iterable[Sequence[SingleMutation]],
     wt_ab: str,
     wt_ag: str,
+    target: MutationTarget,
 ) -> pd.DataFrame:
-    """将多突变组合整理为 predict.py 可读的 model_input CSV 格式。"""
+    """将多突变组合整理为 predict.py 可读的 model_input CSV 格式。
+
+    输入：
+        combos / wt_ab / wt_ag / target
+    输出：
+        含 antibody_seq、antigen_seq 等列的 DataFrame；突变施加到 target 链。
+    """
     rows = []
     for combo in combos:
         ordered = tuple(sorted(combo, key=lambda m: m.site))
-        antigen = apply_combo(wt_ag, ordered)
+        if target == "antigen":
+            antibody = wt_ab
+            antigen = apply_combo(wt_ag, ordered)
+        else:
+            antibody = apply_combo(wt_ab, ordered)
+            antigen = wt_ag
         mutation_id = "+".join(m.mutation_id for m in ordered)
         sites = ";".join(str(m.site) for m in ordered)
         wts = ";".join(m.wildtype for m in ordered)
         muts = ";".join(m.mutation for m in ordered)
         rows.append(
             {
-                "antibody_seq": wt_ab,
+                "antibody_seq": antibody,
                 "antigen_seq": antigen,
                 "mutation_id": mutation_id,
                 "site": sites,
@@ -511,8 +660,7 @@ def combinations_to_dataframe(
                 "mutation": muts,
             }
         )
-    df = pd.DataFrame(rows, columns=REQUIRED_PRED_COLS)
-    return df
+    return pd.DataFrame(rows, columns=REQUIRED_PRED_COLS)
 
 
 def _find_col(columns: Sequence[str], aliases: Sequence[str], role: str) -> str:
@@ -666,6 +814,7 @@ def build_library(
     val_path: Optional[str] = None,
     top_n_singles: int = 30,
     consensus_wt_out: Optional[str] = None,
+    mutation_target: str = "auto",
 ) -> dict:
     """构建多突变预测输入库（先校验数据，再组合）。
 
@@ -677,6 +826,7 @@ def build_library(
         min_order / max_order / max_combinations / seed: 组合控制
         selected_singles_out / consensus_wt_out: 可选落盘
         train_path / val_path: 可选校验；训练仍用完整 train，本函数不改训练数据
+        mutation_target: auto|antibody|antigen；auto 按序列 diff 判定突变链
     输出：
         统计摘要 dict
     """
@@ -700,8 +850,15 @@ def build_library(
     selection_mode: str
     if wt_ab and wt_ag and resolved_wt_kd is not None:
         selection_mode = "better-than-wt"
+        target = detect_mutation_target(df, wt_ab, wt_ag, mutation_target)
         mutants = parse_single_mutations(
-            df, resolved_label, wt_ab, wt_ag, resolved_wt_kd, better_direction
+            df,
+            resolved_label,
+            wt_ab,
+            wt_ag,
+            resolved_wt_kd,
+            better_direction,
+            target,
         )
         if not mutants:
             raise ValueError(
@@ -723,6 +880,7 @@ def build_library(
                 f"启用 Top-{top_n_singles}（不与 WT KD 比较）"
             )
         resolved_wt_kd = None
+        target = detect_mutation_target(df, wt_ab, wt_ag, mutation_target)
         mutants = select_top_affinity_singles(
             df,
             resolved_label,
@@ -730,6 +888,7 @@ def build_library(
             wt_ag,
             better_direction,
             top_n_singles,
+            target,
         )
         if consensus_wt_out and selection_mode == "top-n-consensus":
             out_wt = Path(consensus_wt_out)
@@ -761,6 +920,7 @@ def build_library(
                     "mutation": m.mutation,
                     resolved_label: m.kd,
                     "seq_index": m.seq_index,
+                    "target": m.target,
                     "selection_mode": selection_mode,
                 }
                 for m in mutants
@@ -786,12 +946,17 @@ def build_library(
             f"min_order={min_order}, max_order={max_order}）"
         )
 
-    out_df = combinations_to_dataframe(combos, wt_ab, wt_ag)
+    out_df = combinations_to_dataframe(combos, wt_ab, wt_ag, target)
     for col in ("antibody_seq", "antigen_seq"):
         if col not in out_df.columns or out_df[col].isna().any():
             raise ValueError(f"组合输出缺少有效列 {col}")
-    if out_df["antigen_seq"].map(len).nunique() != 1:
-        raise ValueError("组合输出抗原序列长度不一致")
+    mut_col = "antibody_seq" if target == "antibody" else "antigen_seq"
+    fixed_col = "antigen_seq" if target == "antibody" else "antibody_seq"
+    fixed_wt = wt_ag if target == "antibody" else wt_ab
+    if out_df[mut_col].map(len).nunique() != 1:
+        raise ValueError(f"组合输出 {mut_col} 长度不一致")
+    if not (out_df[fixed_col] == fixed_wt).all():
+        raise ValueError(f"组合输出固定链 {fixed_col} 应全等于野生型")
 
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -801,6 +966,7 @@ def build_library(
         "n_input_rows": int(len(df)),
         "wt_source": wt_source,
         "selection_mode": selection_mode,
+        "mutation_target": target,
         "wt_kd": resolved_wt_kd,
         "label_col": resolved_label,
         "better_direction": better_direction,
@@ -868,6 +1034,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default="",
         help="无野生型时，将一致性野生型序列写出到该路径",
     )
+    p.add_argument(
+        "--mutation-target",
+        choices=["auto", "antibody", "antigen"],
+        default="auto",
+        help="突变施加链：auto 按序列自动判定；antibody/antigen 显式指定",
+    )
     return p.parse_args(argv)
 
 
@@ -891,6 +1063,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             val_path=args.val_path or None,
             top_n_singles=args.top_n_singles,
             consensus_wt_out=args.consensus_wt_out or None,
+            mutation_target=args.mutation_target,
         )
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: 数据校验/组合失败: {exc}", file=sys.stderr)

@@ -209,17 +209,17 @@ DIVLTQSPASLAVSLGQ...,MKTIIALSYILCLVFAQ...,1.5e-9,heavy
 
 Main configuration parameters:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `esm_model_name` | `facebook/esm2_t36_3B_UR50D` | ESM2 model name |
-| `esm_hidden_dim` | 2560 | ESM2 hidden dimension |
-| `r2r_compress_dim` | 1 | R2R compression dimension |
-| `r2r_out_dim` | 32 | R2R output dimension |
-| `gspe_num_projections` | 64 | GSPE number of projections (m) |
-| `gspe_num_groups` | 8 | GSPE number of groups (n) |
-| `learning_rate` | 1e-4 | Learning rate |
-| `warmup_steps` | 100 | Warmup steps |
-| `batch_size` | 8 | Batch size |
+| Parameter              | Default                      | Description                    |
+| ---------------------- | ---------------------------- | ------------------------------ |
+| `esm_model_name`       | `facebook/esm2_t36_3B_UR50D` | ESM2 model name                |
+| `esm_hidden_dim`       | 2560                         | ESM2 hidden dimension          |
+| `r2r_compress_dim`     | 1                            | R2R compression dimension      |
+| `r2r_out_dim`          | 32                           | R2R output dimension           |
+| `gspe_num_projections` | 64                           | GSPE number of projections (m) |
+| `gspe_num_groups`      | 8                            | GSPE number of groups (n)      |
+| `learning_rate`        | 1e-4                         | Learning rate                  |
+| `warmup_steps`         | 100                          | Warmup steps                   |
+| `batch_size`           | 8                            | Batch size                     |
 
 ## Training Details
 
