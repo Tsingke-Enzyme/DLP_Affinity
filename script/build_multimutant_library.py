@@ -278,16 +278,16 @@ def resolve_wildtype_reference(
     wt_path: Optional[str],
     label_col: str,
     wt_kd: Optional[float],
-    train_path: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[float], str]:
     """解析野生型参考；若不存在则返回 (None, None, None, 'none')。
 
     输入：
-        single_df / wt_path / label_col / wt_kd / train_path
+        single_df / wt_path / label_col / wt_kd
+        （仅基于组合输入 --input 与可选 --wt-path，不用扩展训练集）
     输出：
         (antibody_seq, antigen_seq, wt_kd, source)
-        source ∈ {wt-path, train, single, none}
-    优先级：wt-path > train 中 WT 行 > single 中 WT 行。
+        source ∈ {wt-path, single, none}
+    优先级：wt-path > single 中 WT 行。
     """
     ab_col, ag_col = _resolve_seq_cols(single_df)
 
@@ -307,21 +307,6 @@ def resolve_wildtype_reference(
         except ValueError:
             # WT 文件可无标签
             return ab, ag, wt_kd, "wt-path"
-
-    if train_path:
-        train_df = pd.read_csv(train_path)
-        row = find_wildtype_row(train_df)
-        if row is not None:
-            t_ab, t_ag = _resolve_seq_cols(train_df)
-            ab = str(row[t_ab])
-            ag = str(row[t_ag])
-            if wt_kd is not None:
-                return ab, ag, float(wt_kd), "train"
-            try:
-                t_label = _resolve_label_col(train_df.columns, label_col)
-                return ab, ag, float(row[t_label]), "train"
-            except ValueError:
-                return ab, ag, wt_kd, "train"
 
     row = find_wildtype_row(single_df)
     if row is not None:
@@ -749,12 +734,13 @@ def validate_pipeline_inputs(
     wt_path: Optional[str] = None,
     label_col: str = "kd",
 ) -> List[dict]:
-    """流水线前置校验：单突变组合输入 + 训练/验证 CSV。
+    """流水线前置校验：仅校验组合输入 --input（及可选 --wt-path）。
 
     输入：
-        single_mutant_path / train_path / val_path / wt_path / label_col
+        single_mutant_path / wt_path / label_col
+        train_path / val_path：可传入但**不校验**（扩展训练集可能异源、长度不一）
     输出：
-        各文件校验摘要列表；任一项失败抛异常
+        校验摘要列表；失败抛异常
     """
     reports: List[dict] = []
     reports.append(
@@ -778,23 +764,11 @@ def validate_pipeline_inputs(
         )
 
     if train_path:
-        reports.append(
-            validate_affinity_csv(
-                train_path,
-                require_label=True,
-                label_col=label_col,
-                role="train",
-            )
+        print(
+            f"[validate] skip train-path (combo 仅用 --input): {train_path}"
         )
     if val_path:
-        reports.append(
-            validate_affinity_csv(
-                val_path,
-                require_label=True,
-                label_col=label_col,
-                role="val",
-            )
-        )
+        print(f"[validate] skip val-path (combo 仅用 --input): {val_path}")
     return reports
 
 
@@ -819,13 +793,13 @@ def build_library(
     """构建多突变预测输入库（先校验数据，再组合）。
 
     输入：
-        input_path: 单位点突变验证 KD CSV（组合候选来源）
+        input_path: 单位点突变验证 KD CSV（组合候选与 WT/突变链判定的唯一数据源）
         output_path: 预测模块输入 CSV
         wt_path / wt_kd / label_col / better_direction: 野生型与优劣判定
         top_n_singles: 无 WT 时按亲和力选取的位点去重 Top-N
         min_order / max_order / max_combinations / seed: 组合控制
         selected_singles_out / consensus_wt_out: 可选落盘
-        train_path / val_path: 可选校验；训练仍用完整 train，本函数不改训练数据
+        train_path / val_path: 仅透传记录，不参与组合校验与 WT 解析
         mutation_target: auto|antibody|antigen；auto 按序列 diff 判定突变链
     输出：
         统计摘要 dict
@@ -844,7 +818,7 @@ def build_library(
     resolved_label = _resolve_label_col(df.columns, label_col)
 
     wt_ab, wt_ag, resolved_wt_kd, wt_source = resolve_wildtype_reference(
-        df, wt_path, resolved_label, wt_kd, train_path=train_path
+        df, wt_path, resolved_label, wt_kd
     )
 
     selection_mode: str
@@ -869,7 +843,7 @@ def build_library(
         if not (wt_ab and wt_ag):
             selection_mode = "top-n-consensus"
             print(
-                f"[mode] train/单点均无野生型 (source={wt_source})，"
+                f"[mode] --input 无野生型 (source={wt_source})，"
                 f"启用一致性序列 + Top-{top_n_singles}"
             )
             wt_ab, wt_ag = infer_wt_from_consensus(df)
@@ -1016,12 +990,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument(
         "--train-path",
         default="",
-        help="可选：训练 CSV，构建阶段一并校验，失败则阻止后续 train",
+        help="可选：扩展训练 CSV（本脚本不校验、不用于 WT/突变链判定；仅下游 train 使用）",
     )
     p.add_argument(
         "--val-path",
         default="",
-        help="可选：验证 CSV，构建阶段一并校验",
+        help="可选：验证 CSV（本脚本不校验、不参与组合构建）",
     )
     p.add_argument(
         "--top-n-singles",

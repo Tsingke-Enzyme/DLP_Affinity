@@ -2,10 +2,10 @@
 """将 demo_data 各类型 single_mutations.csv + PDB 转为训练投递格式。
 
 输入：
-  demo_data/{blz_3n,blz_4n,mouse}/single_mutations.csv 与 *.pdb
+  data/demo_data/{blz_3n,blz_4n,mouse}/single_mutations.csv 与 *.pdb
 输出：
   1) 各类型目录下 single_samples/：每行一个训练格式 CSV
-  2) demo_data/train_data/：全量汇总 CSV 及按类型拆分的汇总 CSV
+  2) data/demo_data/train_data/：全量汇总 CSV 及按类型拆分的汇总 CSV
 处理逻辑：
   PDB 链 B → antibody_seq（与 mut_seq 一致），链 A → antigen_seq；
   标签列 kd（原始摩尔浓度 K_D）；mutation「site:AA」解析 site/wildtype/mutation。
@@ -23,7 +23,7 @@ import pandas as pd
 from Bio.PDB import PDBParser, PPBuilder
 
 ROOT = Path(__file__).resolve().parents[1]
-DEMO = ROOT / "demo_data"
+DEMO = ROOT / "data" / "demo_data"
 TRAIN_OUT = DEMO / "train_data"
 DATA_TYPES = ("blz_3n", "blz_4n", "mouse")
 
@@ -176,9 +176,10 @@ def main() -> None:
     readme.write_text(
         "\n".join(
             [
-                "# demo_data 训练格式汇总",
+                "# data/demo_data 训练格式汇总",
                 "",
                 "由 `script/prepare_demo_train_data.py` 从各类型 `single_mutations.csv` + PDB 生成。",
+                "开源 Kd 并入请再运行 `script/prepare_public_affinity_data.py`。",
                 "",
                 "## 列说明（Argo 训练可直接使用）",
                 "",
@@ -203,8 +204,8 @@ def main() -> None:
                 "## 投递示例",
                 "",
                 "```bash",
-                f"TRAIN_PATH=$(pwd)/demo_data/train_data/all_train_model_input.csv \\",
-                f"VAL_PATH=$(pwd)/demo_data/train_data/all_train_model_input.csv \\",
+                f"TRAIN_PATH=$(pwd)/data/demo_data/train_data/all_train_model_input.csv \\",
+                f"VAL_PATH=$(pwd)/data/demo_data/train_data/all_train_model_input.csv \\",
                 "./argo/dlp-affinity-train.submit.sh",
                 "```",
                 "",

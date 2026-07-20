@@ -27,8 +27,8 @@ NAMESPACE="${NAMESPACE:-default}"
 # WORK_ROOT：NAS 上该批次工作目录；可用环境变量覆盖
 WORK_ROOT="${WORK_ROOT:-/mnt/nas1/liubo/project/DLP_Affinity_rundir/${BATCH_ID}}"
 OUTPUT_DIR="${OUTPUT_DIR:-${WORK_ROOT}/outputs/dlp-affinity-train-predict_$(date +%Y%m%d_%H%M%S)}"
-NUM_EPOCHS="${NUM_EPOCHS:-10}"
-DEFAULT_TRAIN="${WORK_ROOT}/train_model_input.csv"
+NUM_EPOCHS="${NUM_EPOCHS:-20}"
+DEFAULT_TRAIN="${WORK_ROOT}/../train_data/all_train_model_input.csv"
 TRAIN_PATH_RESOLVED="${TRAIN_PATH:-${DEFAULT_TRAIN}}"
 # 未单独提供 VAL_PATH 时与 train-path 相同，保证训练写出 best_model.pt
 VAL_PATH_RESOLVED="${VAL_PATH:-${TRAIN_PATH_RESOLVED}}"
